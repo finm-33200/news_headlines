@@ -363,7 +363,7 @@ def groupby_weighted_std(
 
         return np.sqrt(numer / denom)
 
-    return data.groupby(by_col).apply(weighted_sd)
+    return data.groupby(by_col).apply(weighted_sd, include_groups=False)
 
 
 def weighted_quantile(
