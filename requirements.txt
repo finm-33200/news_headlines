@@ -48,4 +48,8 @@ chartbook[all]
 wrds>=3.2.0
 jaydebeapi
 
+# Google BigQuery (GDELT data access)
+google-cloud-bigquery>=3.12.0
+db-dtypes>=1.1.1
+
 

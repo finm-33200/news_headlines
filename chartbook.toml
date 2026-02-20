@@ -10,7 +10,7 @@ logo_path = ""
 favicon_path = ""
 
 [pipeline]
-id = "NE"
+id = "news_headlines"
 pipeline_name = "News Headlines"
 pipeline_description = "Curate news headlines data from various sources"
 lead_pipeline_developer = "Jeremiah Bejarano"
@@ -23,10 +23,10 @@ README_file_path = "./README.md"
 [notebooks]
 
 
-[notebooks.01_example_notebook_interactive]
-notebook_name = "Example Notebook Interactive"
-notebook_description = "Example notebook for demonstrating how to construct a Chartbook notebook."
-notebook_path = "_output/01_example_notebook_interactive_ipynb.ipynb"
+[notebooks.01_data_sources_overview]
+notebook_name = "Data Sources Overview"
+notebook_description = "Quick look at each raw dataset pulled by the pipeline."
+notebook_path = "_output/01_data_sources_overview_ipynb.ipynb"
 
 
 

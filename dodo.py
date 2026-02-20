@@ -88,22 +88,37 @@ def task_config():
 def task_pull():
     """Pull data from external sources"""
     yield {
-        "name": "crsp_compustat",
-        "doc": "Pull CRSP Compustat data from WRDS",
+        "name": "ravenpack",
+        "doc": "Pull RavenPack DJ Press Release headlines from WRDS",
         "actions": [
             "ipython ./src/settings.py",
-            "ipython ./src/pull_CRSP_Compustat.py",
+            "ipython ./src/pull_ravenpack.py",
         ],
-        "targets": [DATA_DIR / "CRSP_Compustat.parquet"],
-        "file_dep": ["./src/settings.py", "./src/pull_CRSP_compustat.py"],
+        "targets": [DATA_DIR / "ravenpack_djpr.parquet"],
+        "file_dep": ["./src/settings.py", "./src/pull_ravenpack.py"],
+        "clean": [],
+    }
+
+    yield {
+        "name": "gdelt_sample",
+        "doc": "Pull small sample of GDELT GKG headlines from BigQuery",
+        "actions": [
+            "ipython ./src/settings.py",
+            "ipython ./src/pull_gdelt_small_sample.py",
+        ],
+        "targets": [DATA_DIR / "gdelt_gkg_headlines_sample.parquet"],
+        "file_dep": ["./src/settings.py", "./src/pull_gdelt_small_sample.py"],
         "clean": [],
     }
 
 
 notebook_tasks = {
-    "01_example_notebook_interactive_ipynb": {
-        "path": "./src/01_example_notebook_interactive_ipynb.py",
-        "file_dep": [],
+    "01_data_sources_overview_ipynb": {
+        "path": "./src/01_data_sources_overview_ipynb.py",
+        "file_dep": [
+            DATA_DIR / "ravenpack_djpr.parquet",
+            DATA_DIR / "gdelt_gkg_headlines_sample.parquet",
+        ],
         "targets": [],
     },
 }
