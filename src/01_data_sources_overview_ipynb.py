@@ -16,10 +16,12 @@
 # # Data Sources Overview
 #
 # Quick look at each raw dataset pulled by the pipeline.
-# Two sources are currently collected:
+# Four sources are currently collected:
 #
 # 1. **RavenPack** Dow Jones Press Release headlines (via WRDS)
-# 2. **GDELT** Global Knowledge Graph headlines (via BigQuery)
+# 2. **S&P 500 Constituents** historical membership (via WRDS/CRSP)
+# 3. **GDELT** S&P 500–filtered headlines (via BigQuery)
+# 4. **Free Newswires** S&P 500–filtered headlines (PR Newswire, Business Wire, GlobeNewswire)
 
 # %%
 from pathlib import Path
@@ -122,13 +124,84 @@ plt.show()
 
 # %% [markdown]
 # ---
-# ## 2. GDELT — `gdelt_gkg_headlines_sample.parquet`
+# ## 2. S&P 500 Constituents — `sp500_constituents.parquet`
 #
-# Source script: `pull_gdelt_small_sample.py`
+# Source script: `pull_sp500_constituents.py`
+#
+# Historical membership list of the S&P 500 index from CRSP
+# (`crsp_m_indexes.dsp500list_v2`). Each row is one membership spell
+# for a single PERMNO — i.e. the period during which a stock was part
+# of the index. Used here as an entity-information lookup (company
+# identifiers and index membership dates).
+#
+# **Key columns:**
+#
+# | Column | Description |
+# |---|---|
+# | `permno` | CRSP permanent security identifier |
+# | `mbrstartdt` | Date the stock entered the S&P 500 (inclusive) |
+# | `mbrenddt` | Date the stock exited the S&P 500 (exclusive) |
+# | `indno` | Index identifier |
+# | `mbrflg` | Membership flag |
+
+# %%
+sp = pl.scan_parquet(DATA_DIR / "sp500_constituents.parquet")
+n_rows_sp = sp.select(pl.len()).collect().item()
+cols_sp = sp.collect_schema().names()
+print(f"Rows: {n_rows_sp:,}  |  Columns: {len(cols_sp)}")
+print(f"Column names: {cols_sp}")
+
+# %% [markdown]
+# ### Example rows
+
+# %%
+sp.head(5).collect()
+
+# %% [markdown]
+# ### Membership date range
+
+# %%
+sp.select(
+    pl.col("mbrstartdt").min().alias("earliest_start"),
+    pl.col("mbrstartdt").max().alias("latest_start"),
+    pl.col("mbrenddt").min().alias("earliest_end"),
+    pl.col("mbrenddt").max().alias("latest_end"),
+).collect()
+
+# %% [markdown]
+# ### Unique constituents over full history
+
+# %%
+n_unique = sp.select(pl.col("permno").n_unique()).collect().item()
+print(f"Distinct PERMNOs that have ever been in the S&P 500: {n_unique:,}")
+
+# %% [markdown]
+# ### Number of constituents on a sample date
+
+# %%
+import datetime
+
+sample_date = datetime.date(2023, 6, 30)
+n_on_date = (
+    sp.filter(
+        (pl.col("mbrstartdt") <= sample_date)
+        & (pl.col("mbrenddt") > sample_date)
+    )
+    .select(pl.len())
+    .collect()
+    .item()
+)
+print(f"Constituents on {sample_date}: {n_on_date}")
+
+# %% [markdown]
+# ---
+# ## 3. GDELT S&P 500 — `gdelt_sp500_headlines_sample.parquet`
+#
+# Source script: `pull_gdelt_sp500_headlines.py`
 #
 # Page-title headlines extracted from GDELT's Global Knowledge Graph 2.0,
-# pulled from Google BigQuery. This is a small exploratory sample
-# (one week, Jan 8–15 2024).
+# filtered server-side in BigQuery to articles mentioning S&P 500 companies.
+# This is a small exploratory sample (one week, Jan 8–15 2024).
 #
 # **Key columns:**
 #
@@ -138,9 +211,12 @@ plt.show()
 # | `source_url` | Full URL of the source article |
 # | `source_name` | Domain / common name of the news source |
 # | `headline` | Page title extracted from `<PAGE_TITLE>` tags |
+# | `matched_company` | S&P 500 company name matched via V2Organizations |
+# | `permno` | CRSP permanent security identifier |
+# | `ticker` | Stock ticker symbol |
 
 # %%
-gd = pl.scan_parquet(DATA_DIR / "gdelt_gkg_headlines_sample.parquet")
+gd = pl.scan_parquet(DATA_DIR / "gdelt_sp500_headlines_sample.parquet")
 n_rows_gd = gd.select(pl.len()).collect().item()
 cols_gd = gd.collect_schema().names()
 print(f"Rows: {n_rows_gd:,}  |  Columns: {len(cols_gd)}")
@@ -150,7 +226,7 @@ print(f"Column names: {cols_gd}")
 # ### Example rows
 
 # %%
-gd.filter(pl.col("gkg_date").dt.year() == 2025).head(5).collect()
+gd.head(5).collect()
 
 # %% [markdown]
 # ### Date range
@@ -205,8 +281,67 @@ ax.bar(
 )
 ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
 ax.set_ylabel("Headlines")
-ax.set_title("GDELT GKG sample — headlines per day")
+ax.set_title("GDELT S&P 500 sample — headlines per day")
 fig.tight_layout()
 plt.show()
+
+# %% [markdown]
+# ---
+# ## 4. Free Newswires — `newswire_sp500_headlines_sample.parquet`
+#
+# Source script: `pull_free_newswires.py`
+#
+# Press release headlines scraped from three major free wire services
+# (PR Newswire, Business Wire, GlobeNewswire) via their RSS feeds,
+# then filtered locally to S&P 500 companies using normalized company
+# name substring matching. Complements GDELT by covering the same
+# licensed wire services that RavenPack draws from.
+#
+# **Key columns:**
+#
+# | Column | Description |
+# |---|---|
+# | `date` | Publication date (YYYY-MM-DD) |
+# | `headline` | Press release headline text |
+# | `source_url` | Full URL of the press release |
+# | `source_name` | Wire service name (PR Newswire / Business Wire / GlobeNewswire) |
+# | `matched_company` | S&P 500 company name matched via substring |
+# | `permno` | CRSP permanent security identifier |
+# | `ticker` | Stock ticker symbol |
+
+# %%
+nw = pl.scan_parquet(DATA_DIR / "newswire_sp500_headlines_sample.parquet")
+n_rows_nw = nw.select(pl.len()).collect().item()
+cols_nw = nw.collect_schema().names()
+print(f"Rows: {n_rows_nw:,}  |  Columns: {len(cols_nw)}")
+print(f"Column names: {cols_nw}")
+
+# %% [markdown]
+# ### Example rows
+
+# %%
+nw.head(5).collect()
+
+# %% [markdown]
+# ### Headlines by wire service
+
+# %%
+nw_collected = nw.collect()
+(
+    nw_collected.group_by("source_name")
+    .agg(pl.len().alias("n"))
+    .sort("n", descending=True)
+)
+
+# %% [markdown]
+# ### Top matched companies
+
+# %%
+(
+    nw_collected.group_by("matched_company")
+    .agg(pl.len().alias("n"))
+    .sort("n", descending=True)
+    .head(15)
+)
 
 # %%
