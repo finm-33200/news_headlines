@@ -2,7 +2,8 @@
 Pull RavenPack DJ Press Release headlines from WRDS.
 
 Tables are partitioned by year: ravenpack_dj.rpa_djpr_equities_YYYY.
-Date range covers 2000-01-01 to 2019-06-30 (RavenPack DJ availability window).
+Pulls from 2000-01-01 through the present (skipping years whose tables
+do not yet exist on WRDS).
 
 Key filters (matching Chen, Kelly, and Xiu 2022):
 - entity_type = 'COMP' (companies only)
@@ -11,6 +12,7 @@ Key filters (matching Chen, Kelly, and Xiu 2022):
 - Single-firm stories only (one entity per provider story)
 """
 
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -21,20 +23,24 @@ from settings import config
 DATA_DIR = Path(config("DATA_DIR"))
 WRDS_USERNAME = config("WRDS_USERNAME")
 
-# RavenPack DJ availability window
 RP_START_DATE = "2000-01-01"
-RP_END_DATE = "2019-06-30"
 
 
-def pull_ravenpack(start_date=RP_START_DATE, end_date=RP_END_DATE, wrds_username=WRDS_USERNAME):
+def pull_ravenpack(start_date=RP_START_DATE, end_date=None, wrds_username=WRDS_USERNAME):
     """
     Pull RavenPack DJ Press Release headlines from WRDS, year by year.
 
     Filters for US companies with high relevance (>=90) and single-firm
     stories only (one distinct rp_entity_id per provider story).
 
+    If end_date is None, pulls through the current date. Years whose
+    tables do not exist on WRDS are skipped gracefully.
+
     Returns a concatenated DataFrame across all years in the date range.
     """
+    if end_date is None:
+        end_date = date.today().strftime("%Y-%m-%d")
+
     start_year = int(start_date[:4])
     end_year = int(end_date[:4])
 
@@ -92,7 +98,11 @@ def pull_ravenpack(start_date=RP_START_DATE, end_date=RP_END_DATE, wrds_username
           AND a.timestamp_utc <= '{end_date}'
         """
 
-        df_year = db.raw_sql(query)
+        try:
+            df_year = db.raw_sql(query)
+        except Exception as e:
+            print(f"  {table}: skipping (table may not exist: {e})")
+            continue
         print(f"  {table}: {len(df_year):,} rows")
         frames.append(df_year)
 
@@ -110,7 +120,7 @@ def load_ravenpack(data_dir=DATA_DIR):
 
 
 if __name__ == "__main__":
-    df = pull_ravenpack(start_date=RP_START_DATE, end_date=RP_END_DATE)
+    df = pull_ravenpack(start_date=RP_START_DATE)
     path = Path(DATA_DIR) / "ravenpack_djpr.parquet"
     df.to_parquet(path)
     print(f"Saved to {path}")
