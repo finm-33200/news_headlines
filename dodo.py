@@ -100,16 +100,69 @@ def task_pull():
     }
 
     yield {
-        "name": "gdelt_sample",
-        "doc": "Pull small sample of GDELT GKG headlines from BigQuery",
+        "name": "sp500_constituents",
+        "doc": "Pull historical S&P 500 constituents from WRDS",
         "actions": [
             "ipython ./src/settings.py",
-            "ipython ./src/pull_gdelt_small_sample.py",
+            "ipython ./src/pull_sp500_constituents.py",
         ],
-        "targets": [DATA_DIR / "gdelt_gkg_headlines_sample.parquet"],
-        "file_dep": ["./src/settings.py", "./src/pull_gdelt_small_sample.py"],
+        "targets": [
+            DATA_DIR / "sp500_constituents.parquet",
+            DATA_DIR / "sp500_names_lookup.parquet",
+        ],
+        "file_dep": ["./src/settings.py", "./src/pull_sp500_constituents.py"],
         "clean": [],
     }
+
+    yield {
+        "name": "gdelt_sp500_sample",
+        "doc": "Pull GDELT GKG headlines filtered to S&P 500 companies (sample)",
+        "actions": [
+            "ipython ./src/settings.py",
+            "ipython ./src/pull_gdelt_sp500_headlines.py",
+        ],
+        "targets": [DATA_DIR / "gdelt_sp500_headlines_sample.parquet"],
+        "file_dep": [
+            "./src/settings.py",
+            "./src/pull_gdelt_sp500_headlines.py",
+            DATA_DIR / "sp500_names_lookup.parquet",
+        ],
+        "clean": [],
+    }
+
+    yield {
+        "name": "newswire_sp500_sample",
+        "doc": "Pull free newswire headlines filtered to S&P 500 (sample via RSS)",
+        "actions": [
+            "ipython ./src/settings.py",
+            "ipython ./src/pull_free_newswires.py",
+        ],
+        "targets": [DATA_DIR / "newswire_sp500_headlines_sample.parquet"],
+        "file_dep": [
+            "./src/settings.py",
+            "./src/pull_free_newswires.py",
+            DATA_DIR / "sp500_names_lookup.parquet",
+        ],
+        "clean": [],
+    }
+
+    # Uncomment to enable full newswire sitemap crawl (very slow, days):
+    # yield {
+    #     "name": "newswire_sp500_full",
+    #     "doc": "Pull free newswire headlines filtered to S&P 500 (full via sitemaps)",
+    #     "actions": [
+    #         "ipython ./src/settings.py",
+    #         "ipython ./src/pull_free_newswires.py -- --full",
+    #     ],
+    #     "targets": [],
+    #     "file_dep": [
+    #         "./src/settings.py",
+    #         "./src/pull_free_newswires.py",
+    #         DATA_DIR / "sp500_names_lookup.parquet",
+    #     ],
+    #     "clean": [],
+    # }
+
 
 
 notebook_tasks = {
@@ -117,7 +170,26 @@ notebook_tasks = {
         "path": "./src/01_data_sources_overview_ipynb.py",
         "file_dep": [
             DATA_DIR / "ravenpack_djpr.parquet",
-            DATA_DIR / "gdelt_gkg_headlines_sample.parquet",
+            DATA_DIR / "gdelt_sp500_headlines_sample.parquet",
+            DATA_DIR / "sp500_constituents.parquet",
+            DATA_DIR / "newswire_sp500_headlines_sample.parquet",
+        ],
+        "targets": [],
+    },
+    "02_gdelt_sp500_filtering_ipynb": {
+        "path": "./src/02_gdelt_sp500_filtering_ipynb.py",
+        "file_dep": [
+            DATA_DIR / "gdelt_sp500_headlines_sample.parquet",
+            DATA_DIR / "sp500_names_lookup.parquet",
+            DATA_DIR / "ravenpack_djpr.parquet",
+        ],
+        "targets": [],
+    },
+    "03_explore_merge_ravenpack_gdelt_ipynb": {
+        "path": "./src/03_explore_merge_ravenpack_gdelt_ipynb.py",
+        "file_dep": [
+            DATA_DIR / "ravenpack_djpr.parquet",
+            DATA_DIR / "gdelt_sp500_headlines_sample.parquet",
         ],
         "targets": [],
     },

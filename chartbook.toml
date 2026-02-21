@@ -28,6 +28,16 @@ notebook_name = "Data Sources Overview"
 notebook_description = "Quick look at each raw dataset pulled by the pipeline."
 notebook_path = "_output/01_data_sources_overview_ipynb.ipynb"
 
+[notebooks.02_gdelt_sp500_filtering]
+notebook_name = "GDELT S&P 500 Filtering"
+notebook_description = "Analyze name matching between GDELT V2Organizations and S&P 500 companies, false positive detection, and comparison with RavenPack."
+notebook_path = "_output/02_gdelt_sp500_filtering_ipynb.ipynb"
+
+[notebooks.03_explore_merge_ravenpack_gdelt]
+notebook_name = "Fuzzy Matching: RavenPack vs GDELT"
+notebook_description = "Explore fuzzy matching between RavenPack and GDELT headlines using rapidfuzz."
+notebook_path = "_output/03_explore_merge_ravenpack_gdelt_ipynb.ipynb"
+
 
 
 
