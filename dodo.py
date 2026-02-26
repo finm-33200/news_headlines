@@ -149,12 +149,9 @@ def task_pull():
             / "newswire_headlines"
             / "source=prnewswire"
             / "year=2025"
-            / "month=01",
-            DATA_DIR
-            / "newswire_headlines"
-            / "source=businesswire"
-            / "year=2025"
-            / "month=01",
+            / "month=01"
+            / "day=01"
+            / "data.parquet",
         ],
         "file_dep": [
             "./src/settings.py",
@@ -179,7 +176,9 @@ notebook_tasks = {
             / "newswire_headlines"
             / "source=prnewswire"
             / "year=2025"
-            / "month=01",
+            / "month=01"
+            / "day=01"
+            / "data.parquet",
         ],
         "targets": [],
     },

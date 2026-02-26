@@ -18,6 +18,7 @@ partitioning. Completed days are skipped on re-run. Safe to Ctrl+C.
 """
 
 import argparse
+import calendar
 import gc
 import gzip
 import logging
@@ -533,6 +534,19 @@ def _fetch_headlines_by_day(scraper, urls, done_days, shutdown):
     return headlines_by_day, pages_fetched
 
 
+def _expected_days_in_month(year, month):
+    """Number of days expected on disk for a fully-crawled month.
+
+    For past months: calendar day count (28-31, leap-year aware).
+    For the current month: today's day number (future days haven't happened).
+    """
+    total_days = calendar.monthrange(year, month)[1]
+    today = date.today()
+    if year == today.year and month == today.month:
+        return today.day
+    return total_days
+
+
 def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     """Crawl one scraper for one month. Save raw headlines partitioned by day.
 
@@ -542,6 +556,15 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     source_key = scraper.SOURCE_KEY
     month_str = f"{year:04d}-{month:02d}"
     done_days = _completed_days(output_dir, source_key, year, month)
+
+    # If every expected day is already on disk, skip entirely
+    expected_days = _expected_days_in_month(year, month)
+    if len(done_days) >= expected_days:
+        logger.info(
+            f"  {scraper.NAME}: {month_str} complete "
+            f"({len(done_days)}/{expected_days} days on disk), skipping"
+        )
+        return (0, 0)
 
     # Fetch sitemap URLs
     urls = scraper.sitemap_urls_for_month(year, month)
@@ -561,13 +584,6 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     if not urls:
         logger.info(f"  {scraper.NAME}: all days complete for {month_str}")
         return (0, 0)
-
-    # For PR Newswire (no date in URL): if all ~31 possible days exist, skip
-    if not can_prefilter and len(done_days) >= 28:
-        logger.info(
-            f"  {scraper.NAME}: {len(done_days)} days already on disk "
-            f"for {month_str}, fetching remaining pages to check for new days"
-        )
 
     headlines_by_day, pages_fetched = _fetch_headlines_by_day(
         scraper, urls, done_days, shutdown
