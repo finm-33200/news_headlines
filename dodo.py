@@ -218,6 +218,25 @@ notebook_tasks = {
         ],
         "targets": [],
     },
+    "05_explore_newswire_data_ipynb": {
+        "path": "./src/05_explore_newswire_data_ipynb.py",
+        "file_dep": [
+            DATA_DIR
+            / "newswire_headlines"
+            / "source=prnewswire"
+            / "year=2025"
+            / "month=01"
+            / "day=01"
+            / "data.parquet",
+            DATA_DIR
+            / "gdelt_sp500_headlines"
+            / "year=2025"
+            / "month=01"
+            / "data.parquet",
+            DATA_DIR / "ravenpack_djpr.parquet",
+        ],
+        "targets": [],
+    },
 }
 
 

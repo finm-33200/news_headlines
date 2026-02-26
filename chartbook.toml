@@ -43,6 +43,11 @@ notebook_name = "GDELT Data Lake Analysis"
 notebook_description = "Explore the full GDELT S&P 500 data lake: temporal coverage, company distribution, source diversity, and data quality."
 notebook_path = "_output/04_gdelt_full_sample_analysis_ipynb.ipynb"
 
+[notebooks.05_explore_newswire_data]
+notebook_name = "Newswire Data Exploration"
+notebook_description = "Explore raw newswire headlines and fuzzy-match against GDELT and RavenPack."
+notebook_path = "_output/05_explore_newswire_data_ipynb.ipynb"
+
 
 
 
