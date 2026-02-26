@@ -67,6 +67,33 @@ more than sufficient for this project.
 pip install -r requirements.txt
 ```
 
+### Full Newswire Pull
+
+The default `doit` pipeline pulls a single sample month of newswire headlines.
+To crawl the full history (2020 to present) across PR Newswire, Business Wire,
+and GlobeNewswire, run the script directly:
+
+```bash
+cd src
+python pull_free_newswires.py --full
+```
+
+This is a long-running crawl (days/weeks depending on network speed). It is
+**resumable** — completed days are saved as daily Hive-partitioned parquets and
+skipped on re-run. Safe to `Ctrl+C` and restart.
+
+Common options:
+```bash
+# Start from a specific date instead of 2020-01-01
+python pull_free_newswires.py --full --start 2023-01-01
+
+# Pull a single specific month
+python pull_free_newswires.py --month 2024-06
+
+# Check crawl progress
+python pull_free_newswires.py --status
+```
+
 ### Formatting
 
 This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting Python code.
