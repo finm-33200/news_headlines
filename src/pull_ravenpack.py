@@ -26,7 +26,9 @@ WRDS_USERNAME = config("WRDS_USERNAME")
 RP_START_DATE = "2000-01-01"
 
 
-def pull_ravenpack(start_date=RP_START_DATE, end_date=None, wrds_username=WRDS_USERNAME):
+def pull_ravenpack(
+    start_date=RP_START_DATE, end_date=None, wrds_username=WRDS_USERNAME
+):
     """
     Pull RavenPack DJ Press Release headlines from WRDS, year by year.
 
@@ -120,7 +122,10 @@ def load_ravenpack(data_dir=DATA_DIR):
 
 
 if __name__ == "__main__":
-    df = pull_ravenpack(start_date=RP_START_DATE)
     path = Path(DATA_DIR) / "ravenpack_djpr.parquet"
-    df.to_parquet(path)
-    print(f"Saved to {path}")
+    if path.exists():
+        print(f"Already exists: {path} — skipping pull.")
+    else:
+        df = pull_ravenpack(start_date=RP_START_DATE)
+        df.to_parquet(path)
+        print(f"Saved to {path}")
