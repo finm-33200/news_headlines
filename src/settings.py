@@ -149,7 +149,7 @@ else:
 
 ## Dates
 defaults["START_DATE"] = datetime.strptime("1913-01-01", "%Y-%m-%d")
-defaults["END_DATE"] = datetime.strptime("2024-12-31", "%Y-%m-%d")
+defaults["END_DATE"] = datetime.strptime("2026-12-31", "%Y-%m-%d")
 
 
 ## File paths
