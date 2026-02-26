@@ -74,8 +74,7 @@ To crawl the full history (2020 to present) across PR Newswire, Business Wire,
 and GlobeNewswire, run the script directly:
 
 ```bash
-cd src
-python pull_free_newswires.py --full
+python ./src/pull_free_newswires.py --full
 ```
 
 This is a long-running crawl (days/weeks depending on network speed). It is
@@ -85,13 +84,13 @@ skipped on re-run. Safe to `Ctrl+C` and restart.
 Common options:
 ```bash
 # Start from a specific date instead of 2020-01-01
-python pull_free_newswires.py --full --start 2023-01-01
+python ./src/pull_free_newswires.py --full --start 2023-01-01
 
 # Pull a single specific month
-python pull_free_newswires.py --month 2024-06
+python ./src/pull_free_newswires.py --month 2024-06
 
 # Check crawl progress
-python pull_free_newswires.py --status
+python ./src/pull_free_newswires.py --status
 ```
 
 ### Formatting
