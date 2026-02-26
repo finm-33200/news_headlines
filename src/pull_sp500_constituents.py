@@ -79,7 +79,9 @@ def build_sp500_names_lookup(df: pd.DataFrame) -> pd.DataFrame:
     # or empty strings from "LLC CORP" / "LIMITED INC").
     before = len(lookup)
     lookup = lookup[lookup["comnam_norm"].str.len() >= 5].reset_index(drop=True)
-    print(f"S&P 500 names lookup: {len(lookup):,} rows ({before - len(lookup)} dropped with comnam_norm < 5 chars)")
+    print(
+        f"S&P 500 names lookup: {len(lookup):,} rows ({before - len(lookup)} dropped with comnam_norm < 5 chars)"
+    )
     return lookup
 
 

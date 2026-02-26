@@ -6,13 +6,21 @@ then JOINs it server-side against GDELT's V2Organizations field. This
 filters ~436K global headlines/day down to only those mentioning S&P 500
 companies, dramatically reducing data transfer.
 
-Two modes:
-  Default  — pull a small 1-week sample (fast, for development)
-  --full   — pull the full dataset month-by-month (slow, hours+)
+Three modes:
+  Default    — pull a single sample month into the data lake directory
+  --full     — pull all months (Feb 2015+) into the data lake (slow, hours+)
+  --estimate — estimate cost and time for the full pull
 
-The full pull writes one parquet per month into
-DATA_DIR/gdelt_sp500_headlines/. Months already on disk are skipped,
-so interrupted runs resume where they left off.
+The data lake uses Hive-style partitioning:
+  DATA_DIR/gdelt_sp500_headlines/year=YYYY/month=MM/data.parquet
+
+Months already on disk are skipped, so interrupted runs resume where
+they left off. Polars auto-detects the Hive partition columns (year,
+month) when scanning the directory.
+
+Loader functions:
+  load_gdelt_sp500_headlines()  — LazyFrame scanning the Hive-partitioned data lake
+  filter_to_month(lf, month)    — filter using Hive partition columns (year, month)
 
 Prerequisites:
 - Google Cloud SDK installed
@@ -24,7 +32,8 @@ Prerequisites:
 
 import argparse
 import html
-from datetime import date
+import time
+from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
@@ -35,10 +44,9 @@ from settings import config
 DATA_DIR = Path(config("DATA_DIR"))
 GCP_PROJECT = config("GCP_PROJECT")
 
-GDELT_SAMPLE_START = "2024-01-08"
-GDELT_SAMPLE_END = "2024-01-15"
+SAMPLE_MONTH = "2025-01"
 
-GDELT_FULL_START = "2019-06-01"
+GDELT_FULL_START = "2015-02-01"
 
 GDELT_SP500_DIR = DATA_DIR / "gdelt_sp500_headlines"
 
@@ -74,10 +82,18 @@ def _clean_headlines(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 
+def _month_start_end(month: str) -> tuple[str, str]:
+    """Given 'YYYY-MM', return (first_day, first_day_of_next_month) as date strings."""
+    dt = datetime.strptime(month, "%Y-%m").date()
+    if dt.month == 12:
+        next_month = dt.replace(year=dt.year + 1, month=1, day=1)
+    else:
+        next_month = dt.replace(month=dt.month + 1, day=1)
+    return dt.strftime("%Y-%m-%d"), next_month.strftime("%Y-%m-%d")
+
+
 def _generate_month_ranges(start_date: str, end_date: str):
     """Yield (month_start, month_end) date string pairs for each month in range."""
-    from datetime import datetime
-
     current = datetime.strptime(start_date, "%Y-%m-%d").date()
     end = datetime.strptime(end_date, "%Y-%m-%d").date()
 
@@ -94,6 +110,13 @@ def _generate_month_ranges(start_date: str, end_date: str):
 def _month_filename(month_start: str) -> str:
     """Return output filename for a given month, e.g. '2019-06.parquet'."""
     return f"{month_start[:7]}.parquet"
+
+
+def _hive_partition_path(output_dir: Path, month_start: str) -> Path:
+    """Return Hive-partitioned path: output_dir/year=YYYY/month=MM/data.parquet."""
+    year = month_start[:4]
+    month = month_start[5:7]
+    return output_dir / f"year={year}" / f"month={month}" / "data.parquet"
 
 
 def _upload_names_lookup(client: bigquery.Client, project: str) -> str:
@@ -191,22 +214,22 @@ def _build_query(month_start: str, month_end: str, project: str) -> str:
 
 
 def _pull_and_clean_sp500_month(
-    client: bigquery.Client, month_start: str, month_end: str,
-    project: str, output_dir: Path,
-) -> int:
+    client: bigquery.Client,
+    month_start: str,
+    month_end: str,
+    project: str,
+    output_dir: Path,
+) -> tuple[int, int]:
     """Query BigQuery for one month of S&P 500-filtered headlines.
 
-    Returns the number of cleaned rows written.
+    Returns (number of cleaned rows written, bytes processed).
     """
     query = _build_query(month_start, month_end, project)
 
-    rows = client.query(query).result()
+    job = client.query(query)
+    rows = job.result()
+    bytes_processed = job.total_bytes_processed or 0
     df = pl.from_arrow(rows.to_arrow())
-
-    if len(df) == 0:
-        out_path = output_dir / _month_filename(month_start)
-        df.write_parquet(out_path)
-        return 0
 
     df = df.with_columns(
         pl.col("Extras")
@@ -214,48 +237,58 @@ def _pull_and_clean_sp500_month(
         .alias("headline")
     ).drop("Extras")
 
+    if len(df) == 0:
+        out_path = _hive_partition_path(output_dir, month_start)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df.write_parquet(out_path)
+        return 0, bytes_processed
+
     df = _clean_headlines(df)
 
-    out_path = output_dir / _month_filename(month_start)
+    out_path = _hive_partition_path(output_dir, month_start)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(out_path)
-    return len(df)
+    return len(df), bytes_processed
 
 
 def pull_gdelt_sp500_sample(
-    start_date=GDELT_SAMPLE_START,
-    end_date=GDELT_SAMPLE_END,
+    month=SAMPLE_MONTH,
     project=GCP_PROJECT,
+    output_dir=None,
 ):
-    """Pull a small sample of GDELT headlines filtered to S&P 500 companies.
+    """Pull a single month of GDELT headlines into the data lake directory.
 
-    Returns a cleaned Polars DataFrame.
+    Writes to output_dir/YYYY-MM.parquet using the same format as the
+    full pull. Returns the number of rows written.
     """
+    if output_dir is None:
+        output_dir = GDELT_SP500_DIR
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    month_start, month_end = _month_start_end(month)
+
+    out_path = _hive_partition_path(output_dir, month_start)
+    if out_path.exists():
+        print(f"{out_path} already exists. Delete it to re-pull.")
+        return 0
+
     client = bigquery.Client(project=project)
 
     print("Uploading S&P 500 names lookup to BigQuery...")
     _upload_names_lookup(client, project)
 
-    print(f"Querying GDELT S&P 500 sample from {start_date} to {end_date}...")
-    query = _build_query(start_date, end_date, project)
-
-    rows = client.query(query).result()
-    df = pl.from_arrow(rows.to_arrow())
-    print(f"  Raw rows returned: {len(df):,}")
-
-    if len(df) == 0:
-        print("  No rows matched. Check sp500_names_lookup.parquet.")
-        return df
-
-    df = df.with_columns(
-        pl.col("Extras")
-        .map_elements(_extract_page_title, return_dtype=pl.Utf8)
-        .alias("headline")
-    ).drop("Extras")
-
-    df = _clean_headlines(df)
-    print(f"  Headlines after cleaning: {len(df):,}")
-
-    return df
+    print(f"Querying GDELT S&P 500 for {month} ({month_start} to {month_end})...")
+    n_rows, _ = _pull_and_clean_sp500_month(
+        client,
+        month_start,
+        month_end,
+        project,
+        output_dir,
+    )
+    print(f"  Headlines after cleaning: {n_rows:,}")
+    print(f"Saved to {out_path}")
+    return n_rows
 
 
 def pull_gdelt_sp500_full(
@@ -279,7 +312,9 @@ def pull_gdelt_sp500_full(
     month_ranges = list(_generate_month_ranges(start_date, end_date))
     total_months = len(month_ranges)
 
-    print(f"Full GDELT S&P 500 pull: {start_date} to {end_date} ({total_months} months)")
+    print(
+        f"Full GDELT S&P 500 pull: {start_date} to {end_date} ({total_months} months)"
+    )
     print("Completed months are skipped on re-run.")
     print(f"Output directory: {output_dir}\n")
 
@@ -290,26 +325,96 @@ def pull_gdelt_sp500_full(
     print()
 
     for i, (m_start, m_end) in enumerate(month_ranges, 1):
-        out_path = output_dir / _month_filename(m_start)
+        out_path = _hive_partition_path(output_dir, m_start)
         if out_path.exists():
             print(f"  [{i}/{total_months}] {m_start[:7]}: already exists, skipping")
             continue
 
         print(f"  [{i}/{total_months}] {m_start[:7]}: querying BigQuery...", end="")
-        n_rows = _pull_and_clean_sp500_month(client, m_start, m_end, project, output_dir)
+        n_rows, _ = _pull_and_clean_sp500_month(
+            client, m_start, m_end, project, output_dir
+        )
         print(f" {n_rows:,} rows")
 
     print(f"\nDone. Monthly parquets are in {output_dir}")
 
 
+def estimate_full_pull(
+    start_date=GDELT_FULL_START,
+    end_date=None,
+    project=GCP_PROJECT,
+):
+    """Estimate cost and time for a full GDELT S&P 500 pull.
+
+    Runs 2 test months (one early, one recent), measures wall-clock time
+    and bytes processed, then extrapolates to the full date range.
+    """
+    if end_date is None:
+        end_date = date.today().strftime("%Y-%m-%d")
+
+    month_ranges = list(_generate_month_ranges(start_date, end_date))
+    total_months = len(month_ranges)
+
+    # Pick two test months: one early, one mid-range
+    test_indices = [0, total_months // 2]
+    test_months = [month_ranges[i] for i in test_indices]
+
+    client = bigquery.Client(project=project)
+
+    print("Uploading S&P 500 names lookup to BigQuery...")
+    _upload_names_lookup(client, project)
+
+    print(f"\nEstimating full pull: {start_date} to {end_date} ({total_months} months)")
+    print("Running 2 test queries (dry run disabled — actual queries)...\n")
+
+    total_seconds = 0
+    total_bytes = 0
+
+    for m_start, m_end in test_months:
+        query = _build_query(m_start, m_end, project)
+        print(f"  Test month {m_start[:7]}...", end="", flush=True)
+        t0 = time.time()
+        job = client.query(query)
+        job.result()  # wait for completion
+        elapsed = time.time() - t0
+        bytes_processed = job.total_bytes_processed or 0
+        total_seconds += elapsed
+        total_bytes += bytes_processed
+        print(f" {elapsed:.1f}s, {bytes_processed / 1e9:.2f} GB scanned")
+
+    avg_seconds = total_seconds / len(test_months)
+    avg_bytes = total_bytes / len(test_months)
+
+    est_total_seconds = avg_seconds * total_months
+    est_total_bytes = avg_bytes * total_months
+    est_cost = est_total_bytes / 1e12 * 6.25  # $6.25 per TB on-demand
+
+    print(f"\n{'=' * 60}")
+    print(f"Estimate for {total_months} months ({start_date} to {end_date}):")
+    print(
+        f"  Wall-clock time:  {est_total_seconds / 3600:.1f} hours ({est_total_seconds / 60:.0f} min)"
+    )
+    print(f"  Data scanned:     {est_total_bytes / 1e12:.2f} TB")
+    print(f"  BigQuery cost:    ${est_cost:.2f} (on-demand @ $6.25/TB)")
+    print(f"{'=' * 60}")
+
+    return {
+        "total_months": total_months,
+        "est_hours": est_total_seconds / 3600,
+        "est_tb": est_total_bytes / 1e12,
+        "est_cost_usd": est_cost,
+    }
+
+
+def filter_to_month(lf: pl.LazyFrame, ym: str) -> pl.LazyFrame:
+    """Filter to a YYYY-MM month using Hive partition columns."""
+    year, month = ym.split("-")
+    return lf.filter((pl.col("year") == int(year)) & (pl.col("month") == int(month)))
+
+
 def load_gdelt_sp500_headlines(data_dir=DATA_DIR):
-    """Lazy-scan the full partitioned GDELT S&P 500 headlines directory."""
-    return pl.scan_parquet(Path(data_dir) / "gdelt_sp500_headlines" / "*.parquet")
-
-
-def load_gdelt_sp500_headlines_sample(data_dir=DATA_DIR):
-    """Load the small GDELT S&P 500 headlines sample."""
-    return pl.read_parquet(Path(data_dir) / "gdelt_sp500_headlines_sample.parquet")
+    """Lazy-scan the Hive-partitioned GDELT S&P 500 headlines directory."""
+    return pl.scan_parquet(Path(data_dir) / "gdelt_sp500_headlines")
 
 
 if __name__ == "__main__":
@@ -320,17 +425,27 @@ if __name__ == "__main__":
         "--full",
         action="store_true",
         help=(
-            "Pull the full dataset (June 2019 to present) instead of the "
-            "1-week sample. This takes many hours but skips months already "
+            "Pull the full dataset (Feb 2015 to present) instead of the "
+            "sample month. This takes many hours but skips months already "
             "on disk so interrupted runs can be resumed."
         ),
     )
+    parser.add_argument(
+        "--estimate",
+        action="store_true",
+        help="Estimate cost and time for the full pull without downloading data.",
+    )
+    parser.add_argument(
+        "--month",
+        type=str,
+        default=SAMPLE_MONTH,
+        help=f"YYYY-MM month to pull for the sample (default: {SAMPLE_MONTH}).",
+    )
     args = parser.parse_args()
 
-    if args.full:
+    if args.estimate:
+        estimate_full_pull()
+    elif args.full:
         pull_gdelt_sp500_full()
     else:
-        df = pull_gdelt_sp500_sample()
-        path = DATA_DIR / "gdelt_sp500_headlines_sample.parquet"
-        df.write_parquet(path)
-        print(f"Saved to {path}")
+        pull_gdelt_sp500_sample(month=args.month)
