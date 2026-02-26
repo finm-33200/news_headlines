@@ -38,6 +38,11 @@ notebook_name = "Fuzzy Matching: RavenPack vs GDELT"
 notebook_description = "Explore fuzzy matching between RavenPack and GDELT headlines using rapidfuzz."
 notebook_path = "_output/03_explore_merge_ravenpack_gdelt_ipynb.ipynb"
 
+[notebooks.04_gdelt_full_sample_analysis]
+notebook_name = "GDELT Data Lake Analysis"
+notebook_description = "Explore the full GDELT S&P 500 data lake: temporal coverage, company distribution, source diversity, and data quality."
+notebook_path = "_output/04_gdelt_full_sample_analysis_ipynb.ipynb"
+
 
 
 

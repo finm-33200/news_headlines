@@ -30,6 +30,7 @@ USER = config("USER")
 ## Helpers for handling Jupyter Notebook tasks
 environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
 
+
 # fmt: off
 ## Helper functions for automatic execution of Jupyter notebooks
 def jupyter_execute_notebook(notebook_path):
@@ -116,12 +117,18 @@ def task_pull():
 
     yield {
         "name": "gdelt_sp500_sample",
-        "doc": "Pull GDELT GKG headlines filtered to S&P 500 companies (sample)",
+        "doc": "Pull GDELT GKG headlines filtered to S&P 500 companies (sample month)",
         "actions": [
             "ipython ./src/settings.py",
             "ipython ./src/pull_gdelt_sp500_headlines.py",
         ],
-        "targets": [DATA_DIR / "gdelt_sp500_headlines_sample.parquet"],
+        "targets": [
+            DATA_DIR
+            / "gdelt_sp500_headlines"
+            / "year=2025"
+            / "month=01"
+            / "data.parquet"
+        ],
         "file_dep": [
             "./src/settings.py",
             "./src/pull_gdelt_sp500_headlines.py",
@@ -131,38 +138,30 @@ def task_pull():
     }
 
     yield {
-        "name": "newswire_sp500_sample",
-        "doc": "Pull free newswire headlines filtered to S&P 500 (sample via RSS)",
+        "name": "newswire_sample",
+        "doc": "Pull free newswire headlines for sample month via sitemap crawling",
         "actions": [
             "ipython ./src/settings.py",
             "ipython ./src/pull_free_newswires.py",
         ],
-        "targets": [DATA_DIR / "newswire_sp500_headlines_sample.parquet"],
+        "targets": [
+            DATA_DIR
+            / "newswire_headlines"
+            / "source=prnewswire"
+            / "year=2025"
+            / "month=01",
+            DATA_DIR
+            / "newswire_headlines"
+            / "source=businesswire"
+            / "year=2025"
+            / "month=01",
+        ],
         "file_dep": [
             "./src/settings.py",
             "./src/pull_free_newswires.py",
-            DATA_DIR / "sp500_names_lookup.parquet",
         ],
         "clean": [],
     }
-
-    # Uncomment to enable full newswire sitemap crawl (very slow, days):
-    # yield {
-    #     "name": "newswire_sp500_full",
-    #     "doc": "Pull free newswire headlines filtered to S&P 500 (full via sitemaps)",
-    #     "actions": [
-    #         "ipython ./src/settings.py",
-    #         "ipython ./src/pull_free_newswires.py -- --full",
-    #     ],
-    #     "targets": [],
-    #     "file_dep": [
-    #         "./src/settings.py",
-    #         "./src/pull_free_newswires.py",
-    #         DATA_DIR / "sp500_names_lookup.parquet",
-    #     ],
-    #     "clean": [],
-    # }
-
 
 
 notebook_tasks = {
@@ -170,16 +169,28 @@ notebook_tasks = {
         "path": "./src/01_data_sources_overview_ipynb.py",
         "file_dep": [
             DATA_DIR / "ravenpack_djpr.parquet",
-            DATA_DIR / "gdelt_sp500_headlines_sample.parquet",
+            DATA_DIR
+            / "gdelt_sp500_headlines"
+            / "year=2025"
+            / "month=01"
+            / "data.parquet",
             DATA_DIR / "sp500_constituents.parquet",
-            DATA_DIR / "newswire_sp500_headlines_sample.parquet",
+            DATA_DIR
+            / "newswire_headlines"
+            / "source=prnewswire"
+            / "year=2025"
+            / "month=01",
         ],
         "targets": [],
     },
     "02_gdelt_sp500_filtering_ipynb": {
         "path": "./src/02_gdelt_sp500_filtering_ipynb.py",
         "file_dep": [
-            DATA_DIR / "gdelt_sp500_headlines_sample.parquet",
+            DATA_DIR
+            / "gdelt_sp500_headlines"
+            / "year=2025"
+            / "month=01"
+            / "data.parquet",
             DATA_DIR / "sp500_names_lookup.parquet",
             DATA_DIR / "ravenpack_djpr.parquet",
         ],
@@ -189,7 +200,22 @@ notebook_tasks = {
         "path": "./src/03_explore_merge_ravenpack_gdelt_ipynb.py",
         "file_dep": [
             DATA_DIR / "ravenpack_djpr.parquet",
-            DATA_DIR / "gdelt_sp500_headlines_sample.parquet",
+            DATA_DIR
+            / "gdelt_sp500_headlines"
+            / "year=2025"
+            / "month=01"
+            / "data.parquet",
+        ],
+        "targets": [],
+    },
+    "04_gdelt_full_sample_analysis_ipynb": {
+        "path": "./src/04_gdelt_full_sample_analysis_ipynb.py",
+        "file_dep": [
+            DATA_DIR
+            / "gdelt_sp500_headlines"
+            / "year=2025"
+            / "month=01"
+            / "data.parquet",
         ],
         "targets": [],
     },
@@ -234,8 +260,7 @@ sphinx_targets = [
 def task_build_chartbook_site():
     """Compile Sphinx Docs"""
     notebook_scripts = [
-        Path(notebook_tasks[notebook]["path"])
-        for notebook in notebook_tasks.keys()
+        Path(notebook_tasks[notebook]["path"]) for notebook in notebook_tasks.keys()
     ]
     file_dep = [
         "./README.md",
