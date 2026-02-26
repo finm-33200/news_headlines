@@ -33,16 +33,17 @@
 # 1. **What is GDELT?** — the project, its tables, and how to access them
 # 2. **GDELT tables and how they fit together** — Events, GKG, Mentions
 # 3. **Data dictionary** — the fields we use and the output we produce
-# 4. **Setup & data loading**
-# 5. **Building the S&P 500 names lookup** — normalization and pitfalls
-# 6. **The server-side JOIN** — querying GDELT in BigQuery
-# 7. **The filtering funnel** — measuring each filter stage
-# 8. **Coverage analysis** — what matched
-# 9. **The false positive problem** — what went wrong and why
-# 10. **Spot-check** — verifying clean matches
-# 11. **Comparison with RavenPack** — how does our DIY filter stack up?
-# 12. **Why the overlap is so low** — a source-level analysis
-# 13. **Summary & lessons learned**
+# 4. **Hive-style partitioning** — how we organize the data lake on disk
+# 5. **Setup & data loading**
+# 6. **Building the S&P 500 names lookup** — normalization and pitfalls
+# 7. **The server-side JOIN** — querying GDELT in BigQuery
+# 8. **The filtering funnel** — measuring each filter stage
+# 9. **Coverage analysis** — what matched
+# 10. **The false positive problem** — what went wrong and why
+# 11. **Spot-check** — verifying clean matches
+# 12. **Comparison with RavenPack** — how does our DIY filter stack up?
+# 13. **Why the overlap is so low** — a source-level analysis
+# 14. **Summary & lessons learned**
 
 # %% [markdown]
 # ---
@@ -119,7 +120,7 @@
 # ### GKG fields we use
 #
 # These are the raw columns from the GKG table that our query touches.
-# Understanding them is essential for reading the SQL in Section 6.
+# Understanding them is essential for reading the SQL in Section 7.
 #
 # | GKG Column | Type | Description |
 # |---|---|---|
@@ -137,9 +138,12 @@
 # each article. We normalize these names and JOIN against our S&P 500
 # lookup table.
 #
-# ### Output columns: `gdelt_sp500_headlines_sample.parquet`
+# ### Output columns: `gdelt_sp500_headlines/year=YYYY/month=MM/data.parquet`
 #
-# After our pipeline runs, we produce a parquet file with these columns:
+# The data lake uses **Hive-style partitioning**: each month is stored at
+# `gdelt_sp500_headlines/year=YYYY/month=MM/data.parquet`. Polars
+# auto-detects the `year` and `month` partition columns when scanning
+# the directory with `pl.scan_parquet()`. The columns in each file are:
 #
 # | Column | Description |
 # |---|---|
@@ -156,18 +160,102 @@
 
 # %% [markdown]
 # ---
-# ## 4. Setup & Data Loading
+# ## 4. Hive-Style Partitioning: Organizing the Data Lake
+#
+# Our pipeline stores the filtered GDELT headlines as a collection of
+# Parquet files organized in **Hive-style partitioned** directories.
+# This is a storage convention worth understanding because it appears
+# everywhere in modern data engineering — Spark, Hive, DuckDB, Polars,
+# and PyArrow all recognize it natively.
+#
+# ### What is Hive-style partitioning?
+#
+# Instead of writing one giant file, you split the data into folders
+# whose names encode the value of one or more **partition columns**.
+# The convention is `column_name=value`:
+#
+# ```
+# gdelt_sp500_headlines/
+# ├── year=2015/
+# │   ├── month=02/
+# │   │   └── data.parquet
+# │   ├── month=03/
+# │   │   └── data.parquet
+# │   └── ...
+# ├── year=2016/
+# │   └── month=01/
+# │       └── data.parquet
+# └── ...
+# ```
+#
+# Each leaf file contains only the rows for that year–month combination.
+# The partition columns (`year`, `month`) are not stored inside the
+# Parquet file itself — they are inferred from the directory names at
+# read time.
+#
+# ### Why we use it
+#
+# Three practical benefits drive this design choice:
+#
+# 1. **Partition pruning.** When you filter on a partition column,
+#    the reader skips entire directories that don't match — it never
+#    opens those files at all. For example, loading a single month
+#    from a multi-year data lake reads one Parquet file instead of
+#    scanning every file and filtering in memory. This is the same
+#    idea as BigQuery's `_PARTITIONTIME` pruning (Section 2), but
+#    applied to your local file system.
+#
+# 2. **Incremental writes.** Each month is an independent file in
+#    its own directory. Adding a new month means writing one new file
+#    without touching any existing data. If a pull is interrupted
+#    mid-run, you resume by writing only the months that are missing —
+#    no need to reprocess the entire dataset.
+#
+# 3. **Transparency.** The directory names are human-readable. A
+#    quick `ls` tells you which months are on disk, how large each
+#    file is, and whether anything is missing — no code required.
+#
+# ### How Polars reads it
+#
+# Polars auto-detects the Hive layout when you point `scan_parquet`
+# at the top-level directory:
+#
+# ```python
+# lf = pl.scan_parquet("gdelt_sp500_headlines/")
+# ```
+#
+# This returns a lazy frame with all the original data columns **plus**
+# two virtual columns — `year` and `month` — inferred from the
+# directory names. Filtering on these columns triggers partition
+# pruning automatically:
+#
+# ```python
+# # Only reads the file at year=2025/month=01/data.parquet
+# jan_2025 = lf.filter(
+#     (pl.col("year") == 2025) & (pl.col("month") == 1)
+# ).collect()
+# ```
+
+# %% [markdown]
+# ---
+# ## 5. Setup & Data Loading
 
 # %%
+from datetime import datetime
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pl
 from google.cloud import bigquery
 
+from pull_gdelt_sp500_headlines import (
+    SAMPLE_MONTH,
+    filter_to_month,
+    load_gdelt_sp500_headlines,
+)
 from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
@@ -175,27 +263,36 @@ GCP_PROJECT = config("GCP_PROJECT")
 
 client = bigquery.Client(project=GCP_PROJECT)
 
+# Derive date range from the sample month
+_sm_dt = datetime.strptime(SAMPLE_MONTH, "%Y-%m").date()
+SAMPLE_START = _sm_dt.strftime("%Y-%m-%d")
+if _sm_dt.month == 12:
+    SAMPLE_END = _sm_dt.replace(year=_sm_dt.year + 1, month=1, day=1).strftime(
+        "%Y-%m-%d"
+    )
+else:
+    SAMPLE_END = _sm_dt.replace(month=_sm_dt.month + 1, day=1).strftime("%Y-%m-%d")
+
 # %% [markdown]
 # We work with two files already on disk:
 #
-# - **S&P 500-filtered GDELT sample** — one week (Jan 8-15, 2024),
-#   already pulled by `pull_gdelt_sp500_headlines.py`.
+# - **S&P 500-filtered GDELT sample** — one month from the data lake
+#   (`gdelt_sp500_headlines/year=YYYY/month=MM/data.parquet`), already
+#   pulled by `pull_gdelt_sp500_headlines.py`.
 # - **S&P 500 names lookup** — the mapping table used for the
 #   server-side JOIN, built by `pull_sp500_constituents.py`.
 
 # %%
-gd_sp = pl.read_parquet(DATA_DIR / "gdelt_sp500_headlines_sample.parquet")
+gd_sp = filter_to_month(load_gdelt_sp500_headlines(), SAMPLE_MONTH).collect()
 lookup = pd.read_parquet(DATA_DIR / "sp500_names_lookup.parquet")
 
-SAMPLE_START = "2024-01-08"
-SAMPLE_END = "2024-01-15"
-
-print(f"S&P 500-filtered headlines (1 week):  {len(gd_sp):>10,}")
+print(f"Sample month: {SAMPLE_MONTH} ({SAMPLE_START} to {SAMPLE_END})")
+print(f"S&P 500-filtered headlines (1 month): {len(gd_sp):>10,}")
 print(f"S&P 500 names lookup rows:            {len(lookup):>10,}")
 
 # %% [markdown]
 # ---
-# ## 5. Building the S&P 500 Names Lookup
+# ## 6. Building the S&P 500 Names Lookup
 #
 # Before we can filter GDELT, we need a table of company names to match
 # against. This section explains how the lookup table is built.
@@ -256,7 +353,9 @@ print(f"S&P 500 names lookup rows:            {len(lookup):>10,}")
 
 # %%
 print("Sample normalized names from the lookup table:\n")
-samples = lookup.sample(10, random_state=42)[["comnam", "comnam_norm", "ticker", "permno"]]
+samples = lookup.sample(10, random_state=42)[
+    ["comnam", "comnam_norm", "ticker", "permno"]
+]
 for _, row in samples.iterrows():
     ticker = row.ticker if pd.notna(row.ticker) else "N/A"
     print(f'  "{row.comnam}"  →  "{row.comnam_norm}"  (ticker={ticker})')
@@ -285,14 +384,14 @@ short_names = lookup[lookup["comnam_norm"].str.len() <= 6].copy()
 short_names = short_names.sort_values("comnam_norm").drop_duplicates("comnam_norm")
 
 print(f"Lookup entries with normalized name <= 6 characters: {len(short_names)}")
-print(f"\nExamples of short normalized names:\n")
+print("\nExamples of short normalized names:\n")
 for _, row in short_names.head(20).iterrows():
     ticker = row.ticker if pd.notna(row.ticker) else "N/A"
     print(f'  "{row.comnam}"  →  "{row.comnam_norm}"  (ticker={ticker})')
 
 # %% [markdown]
 # ---
-# ## 6. The Server-Side JOIN: Querying GDELT in BigQuery
+# ## 7. The Server-Side JOIN: Querying GDELT in BigQuery
 #
 # A naive approach would be to download all GDELT rows and filter
 # locally — but that would mean transferring millions of rows per day.
@@ -411,12 +510,12 @@ for _, row in short_names.head(20).iterrows():
 
 # %% [markdown]
 # ---
-# ## 7. The Filtering Funnel
+# ## 8. The Filtering Funnel
 #
 # Each filter in our query cuts the data dramatically. Let's measure
 # each stage with cheap BigQuery `COUNT(*)` queries against our
-# one-week sample window (Jan 8-15, 2024). These queries scan metadata
-# or a single small column, so they cost fractions of a cent.
+# sample month. These queries scan metadata or a single small column,
+# so they cost fractions of a cent.
 
 # %%
 funnel_queries = {
@@ -498,13 +597,15 @@ fig.tight_layout()
 plt.show()
 
 total_reduction = counts[0] / counts[-1] if counts[-1] > 0 else float("inf")
-print(f"\nTotal reduction: {counts[0]:,} → {counts[-1]:,} ({total_reduction:.0f}× smaller)")
+print(
+    f"\nTotal reduction: {counts[0]:,} → {counts[-1]:,} ({total_reduction:.0f}× smaller)"
+)
 
 # %% [markdown]
 # ---
-# ## 8. What Matched: Coverage Analysis
+# ## 9. What Matched: Coverage Analysis
 #
-# How many distinct S&P 500 companies appeared in just one week of
+# How many distinct S&P 500 companies appeared in one month of
 # GDELT?
 
 # %%
@@ -534,7 +635,7 @@ for row in matched_companies.head(25).iter_rows():
 
 # %% [markdown]
 # ---
-# ## 9. The False Positive Problem
+# ## 10. The False Positive Problem
 #
 # ### Why some matches are wrong
 #
@@ -552,6 +653,8 @@ for row in matched_companies.head(25).iter_rows():
 
 # %%
 # Find companies whose normalized name is suspiciously common
+SUSPICIOUS_THRESHOLD = 20_000
+
 company_counts = (
     gd_sp.group_by("matched_company")
     .agg(pl.len().alias("n"))
@@ -560,14 +663,18 @@ company_counts = (
 
 # Show the top 10 with their normalized forms
 top_offenders = company_counts.head(10).to_pandas()
-lookup_map = lookup.drop_duplicates("comnam")[["comnam", "comnam_norm"]].set_index("comnam")
+lookup_map = lookup.drop_duplicates("comnam")[["comnam", "comnam_norm"]].set_index(
+    "comnam"
+)
 
 print(f"{'Company':<35} {'Norm. Name':<25} {'Headlines':>10}")
 print("-" * 72)
 for _, row in top_offenders.iterrows():
     company = row["matched_company"]
     n = row["n"]
-    norm = lookup_map.loc[company, "comnam_norm"] if company in lookup_map.index else "?"
+    norm = (
+        lookup_map.loc[company, "comnam_norm"] if company in lookup_map.index else "?"
+    )
     print(f"{company:<35} {norm:<25} {n:>10,}")
 
 # %% [markdown]
@@ -580,17 +687,21 @@ for _, row in top_offenders.iterrows():
 # %%
 # Show irrelevant headlines for the top false-positive companies
 fp_companies = ["UNITED STATES BANCORP"]
-# Add any company with > 5000 headlines (likely false positive)
-big_hitters = company_counts.filter(pl.col("n") > 5_000)["matched_company"].to_list()
+# Add any company with high headline count (likely false positive)
+big_hitters = company_counts.filter(pl.col("n") > SUSPICIOUS_THRESHOLD)[
+    "matched_company"
+].to_list()
 fp_companies = list(dict.fromkeys(fp_companies + big_hitters))  # dedupe, preserve order
 
 for company in fp_companies[:3]:
     subset = gd_sp.filter(pl.col("matched_company") == company)
-    norm = lookup_map.loc[company, "comnam_norm"] if company in lookup_map.index else "?"
-    print(f"\n{'='*80}")
+    norm = (
+        lookup_map.loc[company, "comnam_norm"] if company in lookup_map.index else "?"
+    )
+    print(f"\n{'=' * 80}")
     print(f'{company}  (normalizes to "{norm}")')
     print(f"{len(subset):,} headlines — sample of clearly irrelevant ones:")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     # Show headlines that do NOT contain the company's ticker or a recognizable
     # fragment — these are almost certainly false positives
     sample = subset.sample(min(15, len(subset)), seed=42)
@@ -644,10 +755,8 @@ fig.tight_layout()
 plt.show()
 
 # %%
-# Flag the top false-positive candidates — companies with > 5,000 headlines
-# in a single week are almost certainly over-matching
-SUSPICIOUS_THRESHOLD = 5_000
-
+# Flag the top false-positive candidates — companies with a very high headline
+# count are almost certainly over-matching
 suspicious = matched_companies.filter(pl.col("n_headlines") > SUSPICIOUS_THRESHOLD)
 suspicious_headlines = gd_sp.filter(
     pl.col("matched_company").is_in(suspicious["matched_company"])
@@ -656,9 +765,13 @@ suspicious_headlines = gd_sp.filter(
 n_suspicious = len(suspicious_headlines)
 n_clean = len(gd_sp) - n_suspicious
 
-print(f"Companies with > {SUSPICIOUS_THRESHOLD:,} headlines/week: {suspicious.height}")
-print(f"Headlines from suspicious matches:    {n_suspicious:>8,} ({n_suspicious/len(gd_sp)*100:.1f}%)")
-print(f"Headlines from remaining companies:   {n_clean:>8,} ({n_clean/len(gd_sp)*100:.1f}%)")
+print(f"Companies with > {SUSPICIOUS_THRESHOLD:,} headlines/month: {suspicious.height}")
+print(
+    f"Headlines from suspicious matches:    {n_suspicious:>8,} ({n_suspicious / len(gd_sp) * 100:.1f}%)"
+)
+print(
+    f"Headlines from remaining companies:   {n_clean:>8,} ({n_clean / len(gd_sp) * 100:.1f}%)"
+)
 
 # %%
 print("Suspicious companies:\n")
@@ -671,7 +784,7 @@ for row in suspicious.iter_rows():
 # ### Mitigation strategies
 #
 # Our pipeline already applies one mitigation — the minimum 5-character
-# filter on normalized names (Section 5). But that doesn't catch longer
+# filter on normalized names (Section 6). But that doesn't catch longer
 # problematic names like "united states" (13 chars). Here are additional
 # strategies, ordered from simplest to most involved:
 #
@@ -698,31 +811,35 @@ for row in suspicious.iter_rows():
 
 # %% [markdown]
 # ---
-# ## 10. Spot-Check: Do the Clean Matches Look Right?
+# ## 11. Spot-Check: Do the Clean Matches Look Right?
 #
 # After removing the suspicious high-count companies, let's verify that
 # the remaining matches are actually relevant headlines about the
 # matched companies.
 
 # %%
-clean_sp = gd_sp.filter(
-    ~pl.col("matched_company").is_in(suspicious["matched_company"])
-)
+clean_sp = gd_sp.filter(~pl.col("matched_company").is_in(suspicious["matched_company"]))
 
 # Sample some well-known companies
-for company in ["APPLE INC", "MICROSOFT CORP", "NVIDIA CORP", "JPMORGAN CHASE & CO", "WALMART INC"]:
+for company in [
+    "APPLE INC",
+    "MICROSOFT CORP",
+    "NVIDIA CORP",
+    "JPMORGAN CHASE & CO",
+    "WALMART INC",
+]:
     subset = clean_sp.filter(pl.col("matched_company") == company)
     if len(subset) == 0:
         continue
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"{company} — {len(subset):,} headlines")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     for row in subset.sample(min(5, len(subset)), seed=42).iter_rows(named=True):
         print(f"  [{row['ticker']}] {row['headline'][:100]}")
 
 # %% [markdown]
 # ---
-# ## 11. Comparison with RavenPack
+# ## 12. Comparison with RavenPack
 #
 # How does our DIY GDELT filtering compare to the industry-standard
 # RavenPack feed? RavenPack costs tens of thousands of dollars per year
@@ -733,24 +850,24 @@ for company in ["APPLE INC", "MICROSOFT CORP", "NVIDIA CORP", "JPMORGAN CHASE & 
 rp = pl.scan_parquet(DATA_DIR / "ravenpack_djpr.parquet")
 
 # Filter RavenPack to same date window
-rp_week = (
+rp_window = (
     rp.with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
     .filter(
-        (pl.col("date") >= pl.lit("2024-01-08").str.to_date("%Y-%m-%d"))
-        & (pl.col("date") < pl.lit("2024-01-15").str.to_date("%Y-%m-%d"))
+        (pl.col("date") >= pl.lit(SAMPLE_START).str.to_date("%Y-%m-%d"))
+        & (pl.col("date") < pl.lit(SAMPLE_END).str.to_date("%Y-%m-%d"))
     )
     .collect()
 )
 
-print(f"Same week (Jan 8-15, 2024):")
-print(f"  RavenPack (US, high relevance):     {len(rp_week):>8,}")
+print(f"Same period ({SAMPLE_MONTH}):")
+print(f"  RavenPack (US, high relevance):     {len(rp_window):>8,}")
 print(f"  GDELT S&P 500 filtered (all):       {len(gd_sp):>8,}")
 print(f"  GDELT S&P 500 filtered (clean):     {n_clean:>8,}")
 
 # %%
 # Compare daily volumes
 rp_daily = (
-    rp_week.with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
+    rp_window.with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
     .group_by("date")
     .agg(pl.len().alias("n"))
     .sort("date")
@@ -764,12 +881,21 @@ clean_daily = (
 )
 
 fig, ax = plt.subplots(figsize=(10, 4))
-ax.bar(rp_daily["date"].to_list(), rp_daily["n"].to_list(),
-       color="darkorange", alpha=0.8, label="RavenPack", width=0.35)
+ax.bar(
+    rp_daily["date"].to_list(),
+    rp_daily["n"].to_list(),
+    color="darkorange",
+    alpha=0.8,
+    label="RavenPack",
+    width=0.35,
+)
 ax.bar(
     [d for d in clean_daily["date"].to_list()],
     clean_daily["n"].to_list(),
-    color="steelblue", alpha=0.8, label="GDELT S&P 500 (clean)", width=0.35,
+    color="steelblue",
+    alpha=0.8,
+    label="GDELT S&P 500 (clean)",
+    width=0.35,
 )
 ax.set_ylabel("Headlines per day")
 ax.set_title("Daily headline volume: RavenPack vs GDELT S&P 500 filtered")
@@ -780,7 +906,7 @@ plt.show()
 
 # %% [markdown]
 # ---
-# ## 12. Why the Overlap Is So Low: A Source-Level Analysis
+# ## 13. Why the Overlap Is So Low: A Source-Level Analysis
 #
 # The daily volume comparison above shows that GDELT produces *more*
 # headlines per day than RavenPack for S&P 500 companies — yet when we
@@ -794,7 +920,7 @@ plt.show()
 # %%
 # What sources does RavenPack use?
 rp_sources = (
-    rp_week.group_by("source_name")
+    rp_window.group_by("source_name")
     .agg(pl.len().alias("n"))
     .sort("n", descending=True)
 )
@@ -807,9 +933,7 @@ print(f"\n  Total unique sources: {rp_sources.height}")
 # %%
 # What sources does GDELT use?
 gd_sources = (
-    gd_sp.group_by("source_name")
-    .agg(pl.len().alias("n"))
-    .sort("n", descending=True)
+    gd_sp.group_by("source_name").agg(pl.len().alias("n")).sort("n", descending=True)
 )
 
 print("GDELT S&P 500 filtered — top sources (same week):\n")
@@ -866,9 +990,13 @@ n_wire = gd_sp.filter(
     & pl.col("source_name").str.to_lowercase().str.contains("|".join(wire_keywords))
 ).height
 
-print(f"GDELT headlines from wire services: {n_wire:,} / {len(gd_sp):,} ({n_wire/len(gd_sp)*100:.1f}%)")
-print(f"\nIn other words, ~{100 - n_wire/len(gd_sp)*100:.0f}% of GDELT's S&P 500 coverage")
-print(f"comes from sources that RavenPack doesn't cover at all.")
+print(
+    f"GDELT headlines from wire services: {n_wire:,} / {len(gd_sp):,} ({n_wire / len(gd_sp) * 100:.1f}%)"
+)
+print(
+    f"\nIn other words, ~{100 - n_wire / len(gd_sp) * 100:.0f}% of GDELT's S&P 500 coverage"
+)
+print("comes from sources that RavenPack doesn't cover at all.")
 
 # %% [markdown]
 # ### Implications
@@ -910,7 +1038,7 @@ print(f"comes from sources that RavenPack doesn't cover at all.")
 
 # %% [markdown]
 # ---
-# ## 13. Summary & Lessons Learned
+# ## 14. Summary & Lessons Learned
 #
 # ### What worked
 #

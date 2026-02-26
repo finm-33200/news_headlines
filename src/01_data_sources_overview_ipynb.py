@@ -96,8 +96,8 @@ rp.select(
 # ### Articles per month
 
 # %%
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 
 rp_monthly = (
     rp.with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
@@ -184,8 +184,7 @@ import datetime
 sample_date = datetime.date(2023, 6, 30)
 n_on_date = (
     sp.filter(
-        (pl.col("mbrstartdt") <= sample_date)
-        & (pl.col("mbrenddt") > sample_date)
+        (pl.col("mbrstartdt") <= sample_date) & (pl.col("mbrenddt") > sample_date)
     )
     .select(pl.len())
     .collect()
@@ -195,13 +194,14 @@ print(f"Constituents on {sample_date}: {n_on_date}")
 
 # %% [markdown]
 # ---
-# ## 3. GDELT S&P 500 — `gdelt_sp500_headlines_sample.parquet`
+# ## 3. GDELT S&P 500 — `gdelt_sp500_headlines/`
 #
 # Source script: `pull_gdelt_sp500_headlines.py`
 #
 # Page-title headlines extracted from GDELT's Global Knowledge Graph 2.0,
 # filtered server-side in BigQuery to articles mentioning S&P 500 companies.
-# This is a small exploratory sample (one week, Jan 8–15 2024).
+# Data is stored as a monthly data lake (`gdelt_sp500_headlines/YYYY-MM.parquet`).
+# Here we load the sample month (January 2025).
 #
 # **Key columns:**
 #
@@ -216,7 +216,13 @@ print(f"Constituents on {sample_date}: {n_on_date}")
 # | `ticker` | Stock ticker symbol |
 
 # %%
-gd = pl.scan_parquet(DATA_DIR / "gdelt_sp500_headlines_sample.parquet")
+from pull_gdelt_sp500_headlines import (
+    SAMPLE_MONTH,
+    filter_to_month,
+    load_gdelt_sp500_headlines,
+)
+
+gd = filter_to_month(load_gdelt_sp500_headlines(), SAMPLE_MONTH)
 n_rows_gd = gd.select(pl.len()).collect().item()
 cols_gd = gd.collect_schema().names()
 print(f"Rows: {n_rows_gd:,}  |  Columns: {len(cols_gd)}")
@@ -246,9 +252,11 @@ headline_lengths = gd_collected.select(
     pl.col("headline").str.len_chars().alias("headline_len")
 )
 print(f"Unique sources: {gd_collected['source_name'].n_unique():,}")
-print(f"Headline length — mean: {headline_lengths['headline_len'].mean():.0f},  "
-      f"median: {headline_lengths['headline_len'].median():.0f},  "
-      f"max: {headline_lengths['headline_len'].max():,}")
+print(
+    f"Headline length — mean: {headline_lengths['headline_len'].mean():.0f},  "
+    f"median: {headline_lengths['headline_len'].median():.0f},  "
+    f"max: {headline_lengths['headline_len'].max():,}"
+)
 
 # %% [markdown]
 # ### Top 15 sources
@@ -281,21 +289,23 @@ ax.bar(
 )
 ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
 ax.set_ylabel("Headlines")
-ax.set_title("GDELT S&P 500 sample — headlines per day")
+ax.set_title(f"GDELT S&P 500 sample ({SAMPLE_MONTH}) — headlines per day")
 fig.tight_layout()
 plt.show()
 
 # %% [markdown]
 # ---
-# ## 4. Free Newswires — `newswire_sp500_headlines_sample.parquet`
+# ## 4. Free Newswires — `newswire_sp500_headlines/`
 #
 # Source script: `pull_free_newswires.py`
 #
 # Press release headlines scraped from three major free wire services
-# (PR Newswire, Business Wire, GlobeNewswire) via their RSS feeds,
+# (PR Newswire, Business Wire, GlobeNewswire) via sitemap crawling,
 # then filtered locally to S&P 500 companies using normalized company
-# name substring matching. Complements GDELT by covering the same
-# licensed wire services that RavenPack draws from.
+# name substring matching. Data is stored as a Hive-partitioned data lake
+# (`newswire_sp500_headlines/year=YYYY/month=MM/data.parquet`).
+# Complements GDELT by covering the same licensed wire services that
+# RavenPack draws from.
 #
 # **Key columns:**
 #
@@ -310,7 +320,46 @@ plt.show()
 # | `ticker` | Stock ticker symbol |
 
 # %%
-nw = pl.scan_parquet(DATA_DIR / "newswire_sp500_headlines_sample.parquet")
+import re
+
+from pull_free_newswires import ALL_SCRAPERS, load_newswire_headlines
+from pull_sp500_constituents import load_sp500_names_lookup, normalize_company_name
+
+raw = load_newswire_headlines().collect()
+
+# Map Hive partition key to human-readable source name
+if "source" in raw.columns and "source_name" not in raw.columns:
+    source_map = {s.SOURCE_KEY: s.NAME for s in ALL_SCRAPERS}
+    raw = raw.with_columns(
+        pl.col("source")
+        .replace_strict(source_map, default="Unknown")
+        .alias("source_name")
+    )
+
+# Filter to S&P 500 companies via normalized name matching
+lookup = pl.from_pandas(load_sp500_names_lookup())
+names = sorted(
+    [n for n in lookup["comnam_norm"].unique().to_list() if n], key=len, reverse=True
+)
+pattern = "(" + "|".join(re.escape(n) for n in names) + ")"
+
+raw = raw.with_columns(
+    pl.col("headline")
+    .map_elements(normalize_company_name, return_dtype=pl.Utf8)
+    .alias("headline_norm")
+)
+nw = raw.filter(pl.col("headline_norm").str.contains(pattern))
+nw = nw.with_columns(
+    pl.col("headline_norm").str.extract(pattern, group_index=1).alias("matched_norm")
+)
+lookup_dedup = lookup.select("comnam_norm", "comnam", "permno", "ticker").unique(
+    subset=["comnam_norm"], keep="first"
+)
+nw = nw.join(
+    lookup_dedup, left_on="matched_norm", right_on="comnam_norm", how="left"
+).rename({"comnam": "matched_company"})
+nw = nw.drop("headline_norm", "matched_norm").lazy()
+
 n_rows_nw = nw.select(pl.len()).collect().item()
 cols_nw = nw.collect_schema().names()
 print(f"Rows: {n_rows_nw:,}  |  Columns: {len(cols_nw)}")

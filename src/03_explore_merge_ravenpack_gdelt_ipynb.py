@@ -23,7 +23,6 @@
 # ## 1. Imports & Config
 
 # %%
-import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -32,7 +31,6 @@ import pandas as pd
 import polars as pl
 from rapidfuzz import fuzz, process
 
-from misc_tools import merge_stats
 from pull_sp500_constituents import normalize_company_name
 from settings import config
 
@@ -42,8 +40,14 @@ DATA_DIR = Path(config("DATA_DIR"))
 # ## 2. Load Data & Inspect Date Ranges
 
 # %%
+from pull_gdelt_sp500_headlines import (
+    SAMPLE_MONTH,
+    filter_to_month,
+    load_gdelt_sp500_headlines,
+)
+
 rp = pl.scan_parquet(DATA_DIR / "ravenpack_djpr.parquet")
-gd = pl.scan_parquet(DATA_DIR / "gdelt_sp500_headlines_sample.parquet")
+gd = filter_to_month(load_gdelt_sp500_headlines(), SAMPLE_MONTH)
 
 # %%
 rp_range = rp.select(
@@ -80,10 +84,7 @@ print(f"Overlap window: {overlap_start} to {overlap_end}")
 # %%
 rp_overlap = (
     rp.with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
-    .filter(
-        (pl.col("date") >= overlap_start)
-        & (pl.col("date") <= overlap_end)
-    )
+    .filter((pl.col("date") >= overlap_start) & (pl.col("date") <= overlap_end))
     .select("date", "headline", "entity_name")
     .collect()
 )
@@ -92,10 +93,7 @@ print(f"RavenPack headlines in overlap: {len(rp_overlap):,}")
 # %%
 gd_overlap = (
     gd.with_columns(pl.col("gkg_date").cast(pl.Date).alias("date"))
-    .filter(
-        (pl.col("date") >= overlap_start)
-        & (pl.col("date") <= overlap_end)
-    )
+    .filter((pl.col("date") >= overlap_start) & (pl.col("date") <= overlap_end))
     .select("date", "headline", "permno", "ticker")
     .collect()
 )
@@ -109,9 +107,7 @@ print(f"GDELT headlines in overlap: {len(gd_overlap):,}")
 # it and match against the S&P 500 names lookup table.
 
 # %%
-sp500_lookup = pl.from_pandas(
-    pd.read_parquet(DATA_DIR / "sp500_names_lookup.parquet")
-)
+sp500_lookup = pl.from_pandas(pd.read_parquet(DATA_DIR / "sp500_names_lookup.parquet"))
 
 rp_overlap = rp_overlap.with_columns(
     pl.col("entity_name")
@@ -120,18 +116,20 @@ rp_overlap = rp_overlap.with_columns(
 )
 
 # Join to get permno/ticker for RP headlines that match an S&P 500 member
-rp_overlap = (
-    rp_overlap.join(
-        sp500_lookup.select("comnam_norm", "permno", "ticker").unique(),
-        left_on="entity_name_norm",
-        right_on="comnam_norm",
-        how="left",
-    )
+rp_overlap = rp_overlap.join(
+    sp500_lookup.select("comnam_norm", "permno", "ticker").unique(),
+    left_on="entity_name_norm",
+    right_on="comnam_norm",
+    how="left",
 )
 
 n_rp_matched = rp_overlap.filter(pl.col("permno").is_not_null()).height
-print(f"RavenPack headlines matched to S&P 500: {n_rp_matched:,} / {len(rp_overlap):,} ({n_rp_matched/len(rp_overlap)*100:.1f}%)")
-print(f"Distinct S&P 500 members in RavenPack:  {rp_overlap.filter(pl.col('permno').is_not_null())['permno'].n_unique()}")
+print(
+    f"RavenPack headlines matched to S&P 500: {n_rp_matched:,} / {len(rp_overlap):,} ({n_rp_matched / len(rp_overlap) * 100:.1f}%)"
+)
+print(
+    f"Distinct S&P 500 members in RavenPack:  {rp_overlap.filter(pl.col('permno').is_not_null())['permno'].n_unique()}"
+)
 print(f"Distinct S&P 500 members in GDELT:      {gd_overlap['permno'].n_unique()}")
 
 # %% [markdown]
@@ -165,10 +163,13 @@ gd_sample = (
 
 print(f"Sample period: {rp_sample['date'].min()} to {rp_sample['date'].max()}")
 print(f"RavenPack sample: {len(rp_sample):,} headlines")
-print(f"GDELT sample:     {len(gd_sample):,} headlines (capped at {GDELT_CAP_PER_DAY}/day)")
+print(
+    f"GDELT sample:     {len(gd_sample):,} headlines (capped at {GDELT_CAP_PER_DAY}/day)"
+)
 
 # %% [markdown]
 # ## 3. Normalize Headlines
+
 
 # %%
 def normalize_headline_col(df: pl.DataFrame, col: str = "headline") -> pl.DataFrame:
@@ -229,24 +230,24 @@ for d in dates_in_common:
         continue
 
     # cdist returns a matrix of shape (len(rp_day), len(gd_day))
-    scores = process.cdist(
-        rp_day, gd_day, scorer=fuzz.token_sort_ratio, workers=-1
-    )
+    scores = process.cdist(rp_day, gd_day, scorer=fuzz.token_sort_ratio, workers=-1)
 
     # For each RP headline, find the best GDELT match
     best_idx = np.argmax(scores, axis=1)
     best_scores = scores[np.arange(len(rp_day)), best_idx]
 
     for i, (rp_hl, gd_idx, score) in enumerate(zip(rp_day, best_idx, best_scores)):
-        crosswalk_rows.append({
-            "date": d,
-            "rp_headline": rp_hl,
-            "gd_headline": gd_day[gd_idx],
-            "fuzzy_score": float(score),
-            "rp_permno": rp_permnos[i],
-            "gd_permno": gd_permnos[gd_idx],
-            "gd_ticker": gd_tickers[gd_idx],
-        })
+        crosswalk_rows.append(
+            {
+                "date": d,
+                "rp_headline": rp_hl,
+                "gd_headline": gd_day[gd_idx],
+                "fuzzy_score": float(score),
+                "rp_permno": rp_permnos[i],
+                "gd_permno": gd_permnos[gd_idx],
+                "gd_ticker": gd_tickers[gd_idx],
+            }
+        )
 
 crosswalk = pl.DataFrame(crosswalk_rows)
 print(f"Crosswalk rows: {len(crosswalk):,}")
@@ -261,7 +262,9 @@ scores_np = crosswalk["fuzzy_score"].to_numpy()
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.hist(scores_np, bins=50, color="steelblue", edgecolor="white", alpha=0.8)
 ax.axvline(80, color="green", linestyle="--", linewidth=1.5, label="Good (>=80)")
-ax.axvline(60, color="orange", linestyle="--", linewidth=1.5, label="Borderline (60-79)")
+ax.axvline(
+    60, color="orange", linestyle="--", linewidth=1.5, label="Borderline (60-79)"
+)
 ax.set_xlabel("Fuzzy Score")
 ax.set_ylabel("Count")
 ax.set_title("Distribution of Best-Match Fuzzy Scores (RavenPack → GDELT)")
@@ -279,9 +282,9 @@ n_non = crosswalk.filter(pl.col("fuzzy_score") < 60).height
 
 print(f"{'Tier':<15} {'Count':>8} {'Pct':>8}")
 print("-" * 33)
-print(f"{'Good (>=80)':<15} {n_good:>8,} {n_good/n_total*100:>7.1f}%")
-print(f"{'Borderline':<15} {n_border:>8,} {n_border/n_total*100:>7.1f}%")
-print(f"{'Non-match':<15} {n_non:>8,} {n_non/n_total*100:>7.1f}%")
+print(f"{'Good (>=80)':<15} {n_good:>8,} {n_good / n_total * 100:>7.1f}%")
+print(f"{'Borderline':<15} {n_border:>8,} {n_border / n_total * 100:>7.1f}%")
+print(f"{'Non-match':<15} {n_non:>8,} {n_non / n_total * 100:>7.1f}%")
 print("-" * 33)
 print(f"{'Total':<15} {n_total:>8,}")
 
@@ -297,18 +300,16 @@ print(f"{'Total':<15} {n_total:>8,}")
 rp_sp500 = set(
     rp_sample.filter(pl.col("permno").is_not_null())["permno"].unique().to_list()
 )
-gd_sp500 = set(
-    gd_sample["permno"].unique().to_list()
-)
+gd_sp500 = set(gd_sample["permno"].unique().to_list())
 
 # S&P 500 members linked via good fuzzy matches
 good_crosswalk = crosswalk.filter(pl.col("fuzzy_score") >= 80)
 matched_rp_permnos = set(
-    good_crosswalk.filter(pl.col("rp_permno").is_not_null())["rp_permno"].unique().to_list()
+    good_crosswalk.filter(pl.col("rp_permno").is_not_null())["rp_permno"]
+    .unique()
+    .to_list()
 )
-matched_gd_permnos = set(
-    good_crosswalk["gd_permno"].unique().to_list()
-)
+matched_gd_permnos = set(good_crosswalk["gd_permno"].unique().to_list())
 linked_permnos = matched_rp_permnos & matched_gd_permnos
 
 print(f"{'Source':<35} {'Members':>8}")
@@ -322,14 +323,25 @@ print(f"{'Linked via good fuzzy match':<35} {len(linked_permnos):>8}")
 # %%
 fig, ax = plt.subplots(figsize=(8, 4))
 
-labels = ["RavenPack\n(S&P 500)", "GDELT\n(S&P 500)", "Both\n(intersect)", "Fuzzy-linked\n(score≥80)"]
+labels = [
+    "RavenPack\n(S&P 500)",
+    "GDELT\n(S&P 500)",
+    "Both\n(intersect)",
+    "Fuzzy-linked\n(score≥80)",
+]
 counts = [len(rp_sp500), len(gd_sp500), len(rp_sp500 & gd_sp500), len(linked_permnos)]
 colors = ["darkorange", "steelblue", "mediumpurple", "green"]
 
 bars = ax.bar(labels, counts, color=colors, edgecolor="white", alpha=0.85)
 for bar, count in zip(bars, counts):
-    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
-            str(count), ha="center", va="bottom", fontweight="bold")
+    ax.text(
+        bar.get_x() + bar.get_width() / 2,
+        bar.get_height() + 1,
+        str(count),
+        ha="center",
+        va="bottom",
+        fontweight="bold",
+    )
 
 ax.set_ylabel("Distinct S&P 500 members (permno)")
 ax.set_title("S&P 500 Member Coverage by Source")
@@ -362,7 +374,9 @@ print(f"S&P 500 members in RavenPack only: {len(rp_only)}")
 if rp_only_details.height > 0:
     print("  Top examples:")
     for row in rp_only_details.head(10).iter_rows(named=True):
-        print(f"    permno={row['permno']}  {row['entity_name']:<30s}  ({row['n']} headlines)")
+        print(
+            f"    permno={row['permno']}  {row['entity_name']:<30s}  ({row['n']} headlines)"
+        )
 
 print(f"\nS&P 500 members in GDELT only: {len(gd_only)}")
 if gd_only_details.height > 0:
@@ -392,48 +406,88 @@ crosswalk = crosswalk.with_row_index("rp_row_id")
 crosswalk.head(10)
 
 # %% [markdown]
-# ## 8. Merge Statistics (`merge_stats`)
+# ## 8. Headline Overlap Analysis
 #
-# ### Date-level merge stats
-
-# %%
-rp_dates = rp_sample.select("date").unique().to_pandas()
-gd_dates = gd_sample.select("date").unique().to_pandas()
-
-date_stats = merge_stats(rp_dates, gd_dates, on=["date"])
-print("Date-level merge stats:")
-date_stats
+# For each RavenPack headline, the crosswalk already contains the best
+# GDELT match and its fuzzy score (from Section 4). Now we ask two
+# questions:
+#
+# 1. **Coverage:** What fraction of RavenPack headlines have a usable
+#    GDELT counterpart (i.e., a "good" match with score >= 80)?
+# 2. **Diversity:** Is the matching spreading across many distinct GDELT
+#    articles, or are multiple RavenPack headlines collapsing onto the
+#    same GDELT article?
 
 # %% [markdown]
-# ### Headline-level merge stats (good matches only)
+# ### Overall match rates
+
+# %%
+n_total = len(crosswalk)
+tier_counts = (
+    crosswalk.group_by("tier").agg(pl.len().alias("n")).sort("n", descending=True)
+)
+
+for row in tier_counts.iter_rows(named=True):
+    pct = row["n"] / n_total * 100
+    print(f"  {row['tier']:<12s}  {row['n']:>6,}  ({pct:5.1f}%)")
+
+n_good = crosswalk.filter(pl.col("tier") == "good").height
+n_gd_distinct = crosswalk.filter(pl.col("tier") == "good")["gd_headline"].n_unique()
+
+print(
+    f"\n{n_good:,} of {n_total:,} RavenPack headlines ({n_good / n_total * 100:.1f}%) "
+    f"found a good GDELT match (score >= 80)."
+)
+print(f"These map to {n_gd_distinct:,} distinct GDELT headlines.")
+
+# %% [markdown]
+# **How to read this:** The "good" rate tells you how much of
+# RavenPack's headline content could plausibly be recovered from GDELT
+# alone. Headlines in the "non-match" tier have no usable GDELT link --
+# they represent content that is unique to RavenPack (or at least not
+# findable via fuzzy matching within the same day).
+
+# %% [markdown]
+# ### GDELT reuse: one-to-one or many-to-one?
+#
+# Each RavenPack headline maps to exactly one best GDELT match, but
+# multiple RavenPack headlines can map to the **same** GDELT article.
+# High reuse means GDELT has fewer unique articles than RavenPack for
+# the matched firms/dates -- the crosswalk is "compressing" information.
 
 # %%
 good_matches = crosswalk.filter(pl.col("tier") == "good")
+gd_reuse = (
+    good_matches.group_by("gd_headline")
+    .agg(pl.len().alias("n_rp_matched"))
+    .group_by("n_rp_matched")
+    .agg(pl.len().alias("n_gd_headlines"))
+    .sort("n_rp_matched")
+)
 
-rp_keyed = good_matches.select(
-    pl.col("date"), pl.col("rp_headline").alias("headline_norm")
-).to_pandas()
-gd_keyed = good_matches.select(
-    pl.col("date"), pl.col("gd_headline").alias("headline_norm")
-).to_pandas()
+print("GDELT headline reuse (among good matches):")
+print(f"  {'RP headlines matched':<25s} {'GDELT headlines':>16s}")
+print("  " + "-" * 43)
+for row in gd_reuse.iter_rows(named=True):
+    label = str(row["n_rp_matched"]) if row["n_rp_matched"] < 5 else "5+"
+    print(f"  {label:<25s} {row['n_gd_headlines']:>16,}")
 
-if len(rp_keyed) > 0 and len(gd_keyed) > 0:
-    headline_stats = merge_stats(rp_keyed, gd_keyed, on=["date", "headline_norm"])
-    print("Headline-level merge stats (good matches, score >= 80):")
-    headline_stats
-else:
-    print("No good matches found — skipping headline-level merge stats.")
+n_reused = gd_reuse.filter(pl.col("n_rp_matched") > 1)["n_gd_headlines"].sum()
+n_unique = gd_reuse.filter(pl.col("n_rp_matched") == 1)["n_gd_headlines"].sum()
+if n_reused is None:
+    n_reused = 0
+if n_unique is None:
+    n_unique = 0
+print(f"\n{n_unique:,} GDELT headlines matched exactly 1 RP headline (one-to-one).")
+print(f"{n_reused:,} GDELT headlines matched 2+ RP headlines (many-to-one).")
 
 # %% [markdown]
-# ### Combined stats table
-
-# %%
-stats_df = pd.DataFrame({
-    "date_level": date_stats,
-})
-if len(rp_keyed) > 0 and len(gd_keyed) > 0:
-    stats_df["headline_level_good"] = headline_stats
-stats_df
+# **What this means:** If most matches are one-to-one, the crosswalk
+# preserves information well -- each RP headline links to a distinct
+# GDELT article. If many GDELT headlines are reused, it suggests GDELT
+# has fewer unique articles than RavenPack for these firms and dates,
+# and the fuzzy matcher is "recycling" the same GDELT text as the
+# nearest neighbor for multiple RP headlines.
 
 # %% [markdown]
 # ## 9. Match Examples
@@ -480,6 +534,9 @@ stats_df
 # - `token_sort_ratio` handles word-order variation between sources.
 # - The score distribution and tier breakdown show what fraction of RavenPack
 #   headlines find plausible GDELT counterparts.
+# - The headline overlap analysis (Section 8) quantifies match coverage and
+#   checks whether the crosswalk maps one-to-one or many-to-one — i.e.,
+#   whether GDELT provides distinct articles or recycles the same text.
 # - The S&P 500 member coverage analysis (Section 6) shows how many distinct
 #   index constituents appear in each source and how many are linked by the
 #   fuzzy crosswalk — giving a firm-level view beyond headline counts.
