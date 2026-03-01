@@ -27,8 +27,10 @@ import signal
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
+import threading
 
 import polars as pl
 import requests
@@ -42,7 +44,8 @@ DATA_DIR = Path(config("DATA_DIR"))
 NEWSWIRE_RAW_DIR = DATA_DIR / "newswire_headlines"
 FULL_START_DATE = "2020-01-01"
 
-REQUEST_DELAY = 1.0  # seconds between page requests
+REQUEST_DELAY = 0.5  # seconds between page requests
+CONCURRENT_WORKERS = 8  # parallel page-fetch workers (fallback path)
 SITEMAP_DELAY = 0.5  # seconds between sitemap requests
 MAX_RETRIES = 3
 
@@ -60,6 +63,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _session = None
+_thread_local = threading.local()
 
 
 def _get_session():
@@ -70,11 +74,47 @@ def _get_session():
     return _session
 
 
+def _get_thread_session():
+    """Return a per-thread requests.Session (for concurrent workers)."""
+    if not hasattr(_thread_local, "session"):
+        s = requests.Session()
+        s.headers.update(HEADERS)
+        _thread_local.session = s
+    return _thread_local.session
+
+
 def _reset_session():
     global _session
     if _session is not None:
         _session.close()
     _session = None
+
+
+def _fetch_thread(url, delay=REQUEST_DELAY):
+    """Thread-safe version of _fetch using a per-thread Session."""
+    session = _get_thread_session()
+    for attempt in range(MAX_RETRIES):
+        try:
+            time.sleep(delay)
+            resp = session.get(url, timeout=30)
+            if resp.status_code == 200:
+                return resp
+            elif resp.status_code == 404:
+                return None
+            elif resp.status_code == 429:
+                wait = (2**attempt) * 10
+                logger.warning(f"429 rate limited, waiting {wait}s: {url}")
+                time.sleep(wait)
+            else:
+                if resp.status_code >= 500:
+                    time.sleep(2**attempt)
+                else:
+                    return None
+        except requests.RequestException as e:
+            logger.warning(f"Request error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+            time.sleep(2**attempt)
+    logger.error(f"Failed after {MAX_RETRIES} retries: {url}")
+    return None
 
 
 def _fetch(url, delay=REQUEST_DELAY):
@@ -114,6 +154,7 @@ def _fetch(url, delay=REQUEST_DELAY):
 # ---------------------------------------------------------------------------
 
 SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+NEWS_NS = {"news": "http://www.google.com/schemas/sitemap-news/0.9"}
 
 _XML_PARSER = etree.XMLParser(recover=True)
 
@@ -184,6 +225,49 @@ def _parse_sitemap_urls(xml_text, url_filter=None):
     return urls
 
 
+def _parse_sitemap_news_entries(xml_bytes):
+    """Parse a Google News sitemap → list of {headline, source_url, date} dicts.
+
+    Returns an empty list if no <news:title> elements are found (i.e., the
+    sitemap is a plain URL list without news metadata).
+    """
+    root = _xml_root(xml_bytes)
+    if root is None:
+        return []
+    url_elems = root.findall("sm:url", SITEMAP_NS)
+    if not url_elems:
+        url_elems = root.findall("url")
+    entries = []
+    for url_elem in url_elems:
+        loc = url_elem.find("sm:loc", SITEMAP_NS)
+        if loc is None:
+            loc = url_elem.find("loc")
+        if loc is None or not loc.text:
+            continue
+        url = loc.text.strip()
+        if "/news-release" not in url.lower():
+            continue
+        title = None
+        pub_date = None
+        news_elem = url_elem.find("news:news", NEWS_NS)
+        if news_elem is not None:
+            title_elem = news_elem.find("news:title", NEWS_NS)
+            if title_elem is not None and title_elem.text:
+                title = title_elem.text.strip()
+            date_elem = news_elem.find("news:publication_date", NEWS_NS)
+            if date_elem is not None and date_elem.text:
+                pub_date = date_elem.text[:10]
+        if not pub_date:
+            lastmod = url_elem.find("sm:lastmod", SITEMAP_NS)
+            if lastmod is None:
+                lastmod = url_elem.find("lastmod")
+            if lastmod is not None and lastmod.text:
+                pub_date = lastmod.text[:10]
+        if title and pub_date:
+            entries.append({"headline": title, "source_url": url, "date": pub_date})
+    return entries
+
+
 # ---------------------------------------------------------------------------
 # Scraper classes
 # ---------------------------------------------------------------------------
@@ -215,12 +299,7 @@ class PRNewswireScraper:
         """PR Newswire URLs don't contain dates."""
         return None
 
-    def fetch_page_headline(self, url):
-        """Fetch one press release page → {headline, source_url, source_name, date}."""
-        resp = _fetch(url)
-        if resp is None:
-            return None
-        soup = BeautifulSoup(resp.text, "lxml")
+    def _parse_headline_from_soup(self, soup, url):
         headline = None
         for selector in ["h1.release-header__title", "h1"]:
             tag = soup.select_one(selector)
@@ -230,19 +309,20 @@ class PRNewswireScraper:
         if not headline:
             return None
         pub_date = None
-        for attr in [
-            {"name": "date"},
-            {"property": "article:published_time"},
-        ]:
+        for attr in [{"name": "date"}, {"property": "article:published_time"}]:
             meta = soup.find("meta", attrs=attr)
             if meta and meta.get("content"):
                 pub_date = meta["content"][:10]
                 break
-        return {
-            "headline": headline,
-            "source_url": url,
-            "date": pub_date,
-        }
+        return {"headline": headline, "source_url": url, "date": pub_date}
+
+    def fetch_page_headline(self, url):
+        """Fetch one press release page → {headline, source_url, date}."""
+        resp = _fetch(url)
+        if resp is None:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        return self._parse_headline_from_soup(soup, url)
 
     def sitemap_urls_for_month(self, year, month):
         """Get press release URLs from gzipped monthly sitemaps.
@@ -278,6 +358,40 @@ class PRNewswireScraper:
         logger.info(f"{self.NAME}: {len(urls)} URLs for {month_str}")
         return urls
 
+    def sitemap_entries_for_month(self, year, month):
+        """Try to extract headlines directly from the gzipped monthly sitemap.
+
+        Returns a list of {headline, source_url, date} dicts if the sitemap
+        contains Google News metadata (<news:title>), or None if no metadata
+        is found and callers should fall back to per-page fetches.
+        """
+        month_str = f"{year:04d}-{month:02d}"
+        abbr = self._MONTH_ABBR.get(month)
+        if abbr is None:
+            return None
+        gz_url = f"https://www.prnewswire.com/Sitemap_Index_{abbr}_{year}.xml.gz"
+        logger.info(f"{self.NAME}: fetching sitemap for metadata: {gz_url}")
+        resp = _fetch(gz_url, delay=SITEMAP_DELAY)
+        if resp is None:
+            logger.warning(f"{self.NAME}: failed to fetch gz sitemap for {month_str}")
+            return None
+        try:
+            xml_bytes = gzip.decompress(resp.content)
+        except Exception as e:
+            logger.warning(f"{self.NAME}: failed to decompress gz sitemap: {e}")
+            return None
+        entries = _parse_sitemap_news_entries(xml_bytes)
+        if entries:
+            logger.info(
+                f"{self.NAME}: {len(entries)} entries with sitemap metadata for {month_str}"
+            )
+            return entries
+        logger.info(
+            f"{self.NAME}: no <news:title> in sitemap for {month_str}; "
+            f"falling back to per-page fetches"
+        )
+        return None
+
 
 class BusinessWireScraper:
     """Scraper for Business Wire (businesswire.com)."""
@@ -296,11 +410,7 @@ class BusinessWireScraper:
             return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
         return None
 
-    def fetch_page_headline(self, url):
-        resp = _fetch(url)
-        if resp is None:
-            return None
-        soup = BeautifulSoup(resp.text, "lxml")
+    def _parse_headline_from_soup(self, soup, url):
         headline = None
         for selector in ["h1.epi-fontLg", "h1.bw-release-title", "h1"]:
             tag = soup.select_one(selector)
@@ -318,11 +428,14 @@ class BusinessWireScraper:
             time_tag = soup.find("time")
             if time_tag and time_tag.get("datetime"):
                 pub_date = time_tag["datetime"][:10]
-        return {
-            "headline": headline,
-            "source_url": url,
-            "date": pub_date,
-        }
+        return {"headline": headline, "source_url": url, "date": pub_date}
+
+    def fetch_page_headline(self, url):
+        resp = _fetch(url)
+        if resp is None:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        return self._parse_headline_from_soup(soup, url)
 
     def sitemap_urls_for_month(self, year, month):
         resp = _fetch(self.SITEMAP_INDEX_URL, delay=SITEMAP_DELAY)
@@ -369,11 +482,7 @@ class GlobeNewswireScraper:
             return m.group(1).replace("/", "-")
         return None
 
-    def fetch_page_headline(self, url):
-        resp = _fetch(url)
-        if resp is None:
-            return None
-        soup = BeautifulSoup(resp.text, "lxml")
+    def _parse_headline_from_soup(self, soup, url):
         headline = None
         for selector in ["h1.article-headline", "h1.main-title", "h1"]:
             tag = soup.select_one(selector)
@@ -387,11 +496,14 @@ class GlobeNewswireScraper:
             meta = soup.find("meta", attrs={"property": "article:published_time"})
             if meta and meta.get("content"):
                 pub_date = meta["content"][:10]
-        return {
-            "headline": headline,
-            "source_url": url,
-            "date": pub_date,
-        }
+        return {"headline": headline, "source_url": url, "date": pub_date}
+
+    def fetch_page_headline(self, url):
+        resp = _fetch(url)
+        if resp is None:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        return self._parse_headline_from_soup(soup, url)
 
     def sitemap_urls_for_month(self, year, month):
         """Get press release URLs from Google News sitemap.
@@ -504,32 +616,47 @@ class _GracefulShutdown:
 
 
 def _fetch_headlines_by_day(scraper, urls, done_days, shutdown):
-    """Fetch page headlines and bucket by day-of-month.
+    """Fetch page headlines concurrently and bucket by day-of-month.
 
+    Uses a ThreadPoolExecutor so multiple pages are in-flight at once.
     Returns (headlines_by_day, pages_fetched). headlines_by_day is a
     defaultdict(list) mapping day int to list of headline dicts.
     """
     headlines_by_day = defaultdict(list)
     pages_fetched = 0
+    lock = threading.Lock()
+    total = len(urls)
 
-    for i, url in enumerate(urls):
-        if shutdown.should_stop:
-            logger.info(f"  {scraper.NAME}: interrupted at URL {i}/{len(urls)}")
-            break
+    def _worker(url):
+        resp = _fetch_thread(url, delay=REQUEST_DELAY)
+        if resp is None:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        return scraper._parse_headline_from_soup(soup, url)
 
-        result = scraper.fetch_page_headline(url)
-        pages_fetched += 1
+    with ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as pool:
+        futures = {}
+        for url in urls:
+            if shutdown.should_stop:
+                break
+            futures[pool.submit(_worker, url)] = url
 
-        if result is not None and result["date"]:
-            day = int(result["date"][8:10])
-            if day not in done_days:
-                headlines_by_day[day].append(result)
-
-        if (i + 1) % 100 == 0:
-            logger.info(
-                f"  {scraper.NAME}: {i + 1}/{len(urls)} pages "
-                f"({(i + 1) / len(urls) * 100:.0f}%)"
-            )
+        for i, future in enumerate(as_completed(futures)):
+            if shutdown.should_stop:
+                logger.info(f"  {scraper.NAME}: interrupted at URL {i}/{total}")
+                break
+            result = future.result()
+            pages_fetched += 1
+            if result is not None and result["date"]:
+                day = int(result["date"][8:10])
+                with lock:
+                    if day not in done_days:
+                        headlines_by_day[day].append(result)
+            if pages_fetched % 100 == 0:
+                logger.info(
+                    f"  {scraper.NAME}: {pages_fetched}/{total} pages "
+                    f"({pages_fetched / total * 100:.0f}%)"
+                )
 
     return headlines_by_day, pages_fetched
 
@@ -550,6 +677,10 @@ def _expected_days_in_month(year, month):
 def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     """Crawl one scraper for one month. Save raw headlines partitioned by day.
 
+    Fast path: if the scraper provides sitemap_entries_for_month(), extracts
+    headlines directly from sitemap XML metadata (no per-page HTTP fetches).
+    Slow path (fallback): fetches each press-release page concurrently.
+
     Skips days that already have a parquet on disk.
     Returns (pages_fetched, headlines_saved) counts, or None if interrupted.
     """
@@ -566,7 +697,30 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
         )
         return (0, 0)
 
-    # Fetch sitemap URLs
+    # --- Fast path: headlines from sitemap metadata (no page fetches) ---
+    if hasattr(scraper, "sitemap_entries_for_month"):
+        entries = scraper.sitemap_entries_for_month(year, month)
+        if entries is not None:
+            month_prefix = f"{year:04d}-{month:02d}"
+            valid = [
+                e for e in entries
+                if e.get("date", "").startswith(month_prefix)
+                and int(e["date"][8:10]) not in done_days
+            ]
+            headlines_by_day = defaultdict(list)
+            for e in valid:
+                headlines_by_day[int(e["date"][8:10])].append(e)
+            headlines_saved = 0
+            for day, day_headlines in sorted(headlines_by_day.items()):
+                _save_day_parquet(day_headlines, output_dir, source_key, year, month, day)
+                headlines_saved += len(day_headlines)
+            logger.info(
+                f"  {scraper.NAME}: {month_str} done via sitemap metadata "
+                f"({headlines_saved} headlines, 0 page fetches)"
+            )
+            return (0, headlines_saved)
+
+    # --- Slow path: fetch each press-release page concurrently ---
     urls = scraper.sitemap_urls_for_month(year, month)
     if not urls:
         return (0, 0)
@@ -594,11 +748,6 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     for day, day_headlines in sorted(headlines_by_day.items()):
         if day in done_days:
             continue
-        # Only save if we're NOT interrupted (avoid partial days)
-        # Exception: if we were interrupted, still save completed days
-        # A day is "complete" if we processed all URLs for it.
-        # For simplicity: always save — partial data is still useful,
-        # and the user can --reset-month to re-crawl if needed.
         _save_day_parquet(day_headlines, output_dir, source_key, year, month, day)
         headlines_saved += len(day_headlines)
 
