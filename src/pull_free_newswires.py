@@ -27,15 +27,14 @@ import calendar
 import gc
 import gzip
 import logging
-import re
 import signal
 import sys
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
-import threading
 
 import polars as pl
 import requests
@@ -538,7 +537,8 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
         if entries is not None:
             month_prefix = f"{year:04d}-{month:02d}"
             valid = [
-                e for e in entries
+                e
+                for e in entries
                 if e.get("date", "").startswith(month_prefix)
                 and int(e["date"][8:10]) not in done_days
             ]
@@ -547,7 +547,9 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
                 headlines_by_day[int(e["date"][8:10])].append(e)
             headlines_saved = 0
             for day, day_headlines in sorted(headlines_by_day.items()):
-                _save_day_parquet(day_headlines, output_dir, source_key, year, month, day)
+                _save_day_parquet(
+                    day_headlines, output_dir, source_key, year, month, day
+                )
                 headlines_saved += len(day_headlines)
             logger.info(
                 f"  {scraper.NAME}: {month_str} done via sitemap metadata "

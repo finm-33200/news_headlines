@@ -69,8 +69,12 @@ def _load_data(data_dir=DATA_DIR):
     logger.info("Loading newswire headlines...")
     nw = load_newswire_headlines(data_dir).collect()
     nw = nw.with_columns(pl.col("date").cast(pl.Date).alias("pub_date"))
-    nw = nw.filter(pl.col("headline").is_not_null() & (pl.col("headline").str.strip_chars() != ""))
-    logger.info(f"  Newswire: {len(nw):,} headlines, {nw['pub_date'].min()} to {nw['pub_date'].max()}")
+    nw = nw.filter(
+        pl.col("headline").is_not_null() & (pl.col("headline").str.strip_chars() != "")
+    )
+    logger.info(
+        f"  Newswire: {len(nw):,} headlines, {nw['pub_date'].min()} to {nw['pub_date'].max()}"
+    )
 
     nw_start = nw["pub_date"].min()
     nw_end = nw["pub_date"].max()
@@ -80,8 +84,18 @@ def _load_data(data_dir=DATA_DIR):
         pl.scan_parquet(data_dir / "ravenpack_djpr.parquet")
         .with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
         .filter((pl.col("date") >= nw_start) & (pl.col("date") <= nw_end))
-        .filter(pl.col("headline").is_not_null() & (pl.col("headline").str.strip_chars() != ""))
-        .select("date", "rp_story_id", "rp_entity_id", "entity_name", "headline", "source_name")
+        .filter(
+            pl.col("headline").is_not_null()
+            & (pl.col("headline").str.strip_chars() != "")
+        )
+        .select(
+            "date",
+            "rp_story_id",
+            "rp_entity_id",
+            "entity_name",
+            "headline",
+            "source_name",
+        )
         .collect()
     )
     logger.info(f"  RavenPack: {len(rp):,} headlines in newswire date range")
@@ -227,15 +241,27 @@ def _print_status(output_path):
     print(f"  Distinct RP entities: {cw['rp_entity_id'].n_unique():,}")
 
     scores = cw["fuzzy_score"]
-    print(f"\n  Fuzzy score: min={scores.min():.1f}, median={scores.median():.1f}, "
-          f"mean={scores.mean():.1f}, max={scores.max():.1f}")
+    print(
+        f"\n  Fuzzy score: min={scores.min():.1f}, median={scores.median():.1f}, "
+        f"mean={scores.mean():.1f}, max={scores.max():.1f}"
+    )
 
     print("\n  Matches by newswire source:")
-    for row in cw.group_by("nw_source").agg(pl.len().alias("n")).sort("n", descending=True).iter_rows(named=True):
+    for row in (
+        cw.group_by("nw_source")
+        .agg(pl.len().alias("n"))
+        .sort("n", descending=True)
+        .iter_rows(named=True)
+    ):
         print(f"    {row['nw_source']}: {row['n']:,}")
 
     print("\n  Matches by RavenPack source:")
-    for row in cw.group_by("rp_source_name").agg(pl.len().alias("n")).sort("n", descending=True).iter_rows(named=True):
+    for row in (
+        cw.group_by("rp_source_name")
+        .agg(pl.len().alias("n"))
+        .sort("n", descending=True)
+        .iter_rows(named=True)
+    ):
         print(f"    {row['rp_source_name']}: {row['n']:,}")
 
 

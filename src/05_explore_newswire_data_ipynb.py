@@ -52,9 +52,7 @@ print(f"Columns: {nw.columns}")
 
 # %%
 source_counts = (
-    nw.group_by("source")
-    .agg(pl.len().alias("n"))
-    .sort("n", descending=True)
+    nw.group_by("source").agg(pl.len().alias("n")).sort("n", descending=True)
 )
 print("Headlines by source:")
 source_counts
@@ -116,6 +114,7 @@ print(f"Newswire-RavenPack overlap: {len(nw_rp_dates)} days")
 
 # %% [markdown]
 # ## 4. Normalize Headlines
+
 
 # %%
 def normalize_headline_col(df: pl.DataFrame, col: str = "headline") -> pl.DataFrame:
@@ -268,6 +267,7 @@ fig.suptitle("Best-Match Fuzzy Score Distributions", fontweight="bold")
 fig.tight_layout()
 plt.show()
 
+
 # %%
 def tier_summary(crosswalk: pl.DataFrame, label: str) -> None:
     n_total = len(crosswalk)
@@ -310,9 +310,7 @@ print("Top 10 GOOD matches (Newswire vs GDELT):")
 # %%
 print("Top 10 BORDERLINE matches (Newswire vs GDELT):")
 (
-    gd_crosswalk.filter(
-        (pl.col("fuzzy_score") >= 60) & (pl.col("fuzzy_score") < 80)
-    )
+    gd_crosswalk.filter((pl.col("fuzzy_score") >= 60) & (pl.col("fuzzy_score") < 80))
     .sort("fuzzy_score", descending=True)
     .head(10)
     .select("date", "nw_headline", "gd_headline", "fuzzy_score")
@@ -342,9 +340,7 @@ print("Top 10 GOOD matches (Newswire vs RavenPack):")
 # %%
 print("Top 10 BORDERLINE matches (Newswire vs RavenPack):")
 (
-    rp_crosswalk.filter(
-        (pl.col("fuzzy_score") >= 60) & (pl.col("fuzzy_score") < 80)
-    )
+    rp_crosswalk.filter((pl.col("fuzzy_score") >= 60) & (pl.col("fuzzy_score") < 80))
     .sort("fuzzy_score", descending=True)
     .head(10)
     .select("date", "nw_headline", "rp_headline", "fuzzy_score")
@@ -423,18 +419,18 @@ print(f"Matched newswire URLs:      {nw_matched_urls:,}")
 print(f"Newswire match rate:        {nw_matched_urls / nw_total_urls * 100:.1f}%")
 
 # %%
-nw_by_source = (
-    nw_full.group_by("source")
-    .agg(pl.col("source_url").n_unique().alias("total_urls"))
+nw_by_source = nw_full.group_by("source").agg(
+    pl.col("source_url").n_unique().alias("total_urls")
 )
-cw_by_source = (
-    cw.group_by("nw_source")
-    .agg(pl.col("nw_source_url").n_unique().alias("matched_urls"))
+cw_by_source = cw.group_by("nw_source").agg(
+    pl.col("nw_source_url").n_unique().alias("matched_urls")
 )
 nw_coverage = (
     nw_by_source.join(cw_by_source, left_on="source", right_on="nw_source", how="left")
     .with_columns(pl.col("matched_urls").fill_null(0))
-    .with_columns((pl.col("matched_urls") / pl.col("total_urls") * 100).alias("match_pct"))
+    .with_columns(
+        (pl.col("matched_urls") / pl.col("total_urls") * 100).alias("match_pct")
+    )
     .sort("total_urls", descending=True)
 )
 print("Newswire coverage by source:")
@@ -447,10 +443,7 @@ nw_coverage
 rp_full = (
     pl.scan_parquet(DATA_DIR / "ravenpack_djpr.parquet")
     .with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
-    .filter(
-        (pl.col("date") >= cw["date"].min())
-        & (pl.col("date") <= cw["date"].max())
-    )
+    .filter((pl.col("date") >= cw["date"].min()) & (pl.col("date") <= cw["date"].max()))
     .select("date", "rp_story_id", "entity_name", "source_name", "headline")
     .collect()
 )
@@ -460,21 +453,25 @@ rp_matched_stories = cw["rp_story_id"].n_unique()
 
 print(f"Total RP stories in date range:  {rp_total_stories:,}")
 print(f"Matched RP stories:              {rp_matched_stories:,}")
-print(f"RP match rate:                   {rp_matched_stories / rp_total_stories * 100:.1f}%")
+print(
+    f"RP match rate:                   {rp_matched_stories / rp_total_stories * 100:.1f}%"
+)
 
 # %%
-rp_by_source = (
-    rp_full.group_by("source_name")
-    .agg(pl.col("rp_story_id").n_unique().alias("total_stories"))
+rp_by_source = rp_full.group_by("source_name").agg(
+    pl.col("rp_story_id").n_unique().alias("total_stories")
 )
-cw_rp_by_source = (
-    cw.group_by("rp_source_name")
-    .agg(pl.col("rp_story_id").n_unique().alias("matched_stories"))
+cw_rp_by_source = cw.group_by("rp_source_name").agg(
+    pl.col("rp_story_id").n_unique().alias("matched_stories")
 )
 rp_coverage = (
-    rp_by_source.join(cw_rp_by_source, left_on="source_name", right_on="rp_source_name", how="left")
+    rp_by_source.join(
+        cw_rp_by_source, left_on="source_name", right_on="rp_source_name", how="left"
+    )
     .with_columns(pl.col("matched_stories").fill_null(0))
-    .with_columns((pl.col("matched_stories") / pl.col("total_stories") * 100).alias("match_pct"))
+    .with_columns(
+        (pl.col("matched_stories") / pl.col("total_stories") * 100).alias("match_pct")
+    )
     .sort("total_stories", descending=True)
 )
 print("RavenPack coverage by source:")
@@ -497,13 +494,15 @@ fig.tight_layout()
 plt.show()
 
 # %%
-print(f"Fuzzy score stats:")
+print("Fuzzy score stats:")
 print(f"  Min:    {scores_np.min():.1f}")
 print(f"  Median: {np.median(scores_np):.1f}")
 print(f"  Mean:   {scores_np.mean():.1f}")
 print(f"  Max:    {scores_np.max():.1f}")
 print(f"  >= 90:  {(scores_np >= 90).sum():,} ({(scores_np >= 90).mean() * 100:.1f}%)")
-print(f"  80-89:  {((scores_np >= 80) & (scores_np < 90)).sum():,} ({((scores_np >= 80) & (scores_np < 90)).mean() * 100:.1f}%)")
+print(
+    f"  80-89:  {((scores_np >= 80) & (scores_np < 90)).sum():,} ({((scores_np >= 80) & (scores_np < 90)).mean() * 100:.1f}%)"
+)
 
 # %% [markdown]
 # ## 12. Time-Series: Matched Articles per Day
@@ -512,23 +511,11 @@ print(f"  80-89:  {((scores_np >= 80) & (scores_np < 90)).sum():,} ({((scores_np
 # and RavenPack headlines per day for context.
 
 # %%
-cw_daily = (
-    cw.group_by("date")
-    .agg(pl.len().alias("matched"))
-    .sort("date")
-)
+cw_daily = cw.group_by("date").agg(pl.len().alias("matched")).sort("date")
 
-nw_daily = (
-    nw_full.group_by("pub_date")
-    .agg(pl.len().alias("nw_total"))
-    .sort("pub_date")
-)
+nw_daily = nw_full.group_by("pub_date").agg(pl.len().alias("nw_total")).sort("pub_date")
 
-rp_daily = (
-    rp_full.group_by("date")
-    .agg(pl.len().alias("rp_total"))
-    .sort("date")
-)
+rp_daily = rp_full.group_by("date").agg(pl.len().alias("rp_total")).sort("date")
 
 # %%
 fig, ax = plt.subplots(figsize=(14, 5))
@@ -560,7 +547,9 @@ ax.plot(
 
 ax.set_xlabel("Date")
 ax.set_ylabel("Articles per Day")
-ax.set_title("Daily Headline Counts: Newswire, RavenPack, and Matched", fontweight="bold")
+ax.set_title(
+    "Daily Headline Counts: Newswire, RavenPack, and Matched", fontweight="bold"
+)
 ax.legend(fontsize=9)
 fig.tight_layout()
 plt.show()
@@ -576,7 +565,9 @@ cw_monthly = (
         pl.len().alias("total_matches"),
         pl.col("date").n_unique().alias("active_days"),
     )
-    .with_columns((pl.col("total_matches") / pl.col("active_days")).alias("matches_per_day"))
+    .with_columns(
+        (pl.col("total_matches") / pl.col("active_days")).alias("matches_per_day")
+    )
     .sort("month")
 )
 
