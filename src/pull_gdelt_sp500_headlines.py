@@ -107,11 +107,6 @@ def _generate_month_ranges(start_date: str, end_date: str):
         current = next_month
 
 
-def _month_filename(month_start: str) -> str:
-    """Return output filename for a given month, e.g. '2019-06.parquet'."""
-    return f"{month_start[:7]}.parquet"
-
-
 def _hive_partition_path(output_dir: Path, month_start: str) -> Path:
     """Return Hive-partitioned path: output_dir/year=YYYY/month=MM/data.parquet."""
     year = month_start[:4]
