@@ -1,8 +1,8 @@
 """
-Pull free newswire headlines from PR Newswire, Business Wire, and GlobeNewswire.
+Pull free newswire headlines from PR Newswire.
 
-Scrapes press releases from three major free wire services via sitemap
-crawling. Raw headlines are saved to a Hive-partitioned data lake:
+Scrapes press releases from PR Newswire via sitemap crawling.
+Raw headlines are saved to a Hive-partitioned data lake:
 
     newswire_headlines/source={key}/year=YYYY/month=MM/day=DD/data.parquet
 
@@ -10,10 +10,15 @@ S&P 500 filtering is done downstream in analysis notebooks.
 
 Two modes:
   Default    — crawl a single sample month (default: SAMPLE_MONTH).
-  --full     — long-running crawl (days/weeks), 2020 to present.
+  --full     — long-running crawl (days/weeks), 2010 to present.
 
 Both modes write to the same output directory with the same daily
 partitioning. Completed days are skipped on re-run. Safe to Ctrl+C.
+
+Note: Business Wire and GlobeNewswire were previously attempted but
+removed. Business Wire's sitemap consistently times out, and
+GlobeNewswire's sitemap only contains ~2 days of recent articles,
+making historical crawls impossible.
 
 """
 
@@ -42,7 +47,7 @@ from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
 NEWSWIRE_RAW_DIR = DATA_DIR / "newswire_headlines"
-FULL_START_DATE = "2020-01-01"
+FULL_START_DATE = "2010-01-01"
 
 REQUEST_DELAY = 0.5  # seconds between page requests
 CONCURRENT_WORKERS = 8  # parallel page-fetch workers (fallback path)
@@ -90,39 +95,14 @@ def _reset_session():
     _session = None
 
 
-def _fetch_thread(url, delay=REQUEST_DELAY):
-    """Thread-safe version of _fetch using a per-thread Session."""
-    session = _get_thread_session()
-    for attempt in range(MAX_RETRIES):
-        try:
-            time.sleep(delay)
-            resp = session.get(url, timeout=30)
-            if resp.status_code == 200:
-                return resp
-            elif resp.status_code == 404:
-                return None
-            elif resp.status_code == 429:
-                wait = (2**attempt) * 10
-                logger.warning(f"429 rate limited, waiting {wait}s: {url}")
-                time.sleep(wait)
-            else:
-                if resp.status_code >= 500:
-                    time.sleep(2**attempt)
-                else:
-                    return None
-        except requests.RequestException as e:
-            logger.warning(f"Request error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
-            time.sleep(2**attempt)
-    logger.error(f"Failed after {MAX_RETRIES} retries: {url}")
-    return None
-
-
-def _fetch(url, delay=REQUEST_DELAY):
+def _fetch(url, delay=REQUEST_DELAY, session=None):
     """Fetch a URL with rate limiting, retries, and exponential backoff.
 
     Returns the Response on success, or None on 404 / permanent failure.
+    Pass a thread-local session for use from worker threads.
     """
-    session = _get_session()
+    if session is None:
+        session = _get_session()
     for attempt in range(MAX_RETRIES):
         try:
             time.sleep(delay)
@@ -316,14 +296,6 @@ class PRNewswireScraper:
                 break
         return {"headline": headline, "source_url": url, "date": pub_date}
 
-    def fetch_page_headline(self, url):
-        """Fetch one press release page → {headline, source_url, date}."""
-        resp = _fetch(url)
-        if resp is None:
-            return None
-        soup = BeautifulSoup(resp.text, "lxml")
-        return self._parse_headline_from_soup(soup, url)
-
     def sitemap_urls_for_month(self, year, month):
         """Get press release URLs from gzipped monthly sitemaps.
 
@@ -393,145 +365,7 @@ class PRNewswireScraper:
         return None
 
 
-class BusinessWireScraper:
-    """Scraper for Business Wire (businesswire.com)."""
-
-    NAME = "Business Wire"
-    SOURCE_KEY = "businesswire"
-    SITEMAP_INDEX_URL = "https://www.businesswire.com/sitemap-index.xml"
-
-    _BW_DATE_RE = re.compile(r"/(\d{8})\d+/en/")
-
-    def date_from_url(self, url):
-        """Extract YYYY-MM-DD from Business Wire URL timestamp."""
-        m = self._BW_DATE_RE.search(url)
-        if m:
-            d = m.group(1)
-            return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-        return None
-
-    def _parse_headline_from_soup(self, soup, url):
-        headline = None
-        for selector in ["h1.epi-fontLg", "h1.bw-release-title", "h1"]:
-            tag = soup.select_one(selector)
-            if tag and tag.get_text(strip=True):
-                headline = tag.get_text(strip=True)
-                break
-        if not headline:
-            return None
-        pub_date = self.date_from_url(url)
-        if not pub_date:
-            meta = soup.find("meta", attrs={"property": "article:published_time"})
-            if meta and meta.get("content"):
-                pub_date = meta["content"][:10]
-        if not pub_date:
-            time_tag = soup.find("time")
-            if time_tag and time_tag.get("datetime"):
-                pub_date = time_tag["datetime"][:10]
-        return {"headline": headline, "source_url": url, "date": pub_date}
-
-    def fetch_page_headline(self, url):
-        resp = _fetch(url)
-        if resp is None:
-            return None
-        soup = BeautifulSoup(resp.text, "lxml")
-        return self._parse_headline_from_soup(soup, url)
-
-    def sitemap_urls_for_month(self, year, month):
-        resp = _fetch(self.SITEMAP_INDEX_URL, delay=SITEMAP_DELAY)
-        if resp is None:
-            logger.warning(f"{self.NAME}: failed to fetch sitemap index")
-            return []
-        child_sitemaps = _parse_sitemap_index(resp.content)
-        month_str = f"{year:04d}-{month:02d}"
-        month_str_alt = f"{year:04d}{month:02d}"
-        relevant = [u for u in child_sitemaps if month_str in u or month_str_alt in u]
-        if not relevant:
-            relevant = child_sitemaps
-        month_prefix = f"/{year:04d}/{month:02d}/"
-        date_prefix = f"{year:04d}{month:02d}"
-        urls = []
-        for sitemap_url in relevant:
-            resp = _fetch(sitemap_url, delay=SITEMAP_DELAY)
-            if resp is None:
-                continue
-            page_urls = _parse_sitemap_urls(
-                resp.content,
-                url_filter=lambda u, _mp=month_prefix, _dp=date_prefix: (
-                    (_mp in u or _dp in u) and "news" in u.lower()
-                ),
-            )
-            urls.extend(page_urls)
-        logger.info(f"{self.NAME}: {len(urls)} URLs for {month_str}")
-        return urls
-
-
-class GlobeNewswireScraper:
-    """Scraper for GlobeNewswire (globenewswire.com)."""
-
-    NAME = "GlobeNewswire"
-    SOURCE_KEY = "globenewswire"
-    SITEMAP_URL = "https://www.globenewswire.com/en/Newsroom/GoogleSitemap"
-
-    _GNW_DATE_RE = re.compile(r"/news-release/(\d{4}/\d{2}/\d{2})/")
-
-    def date_from_url(self, url):
-        """Extract YYYY-MM-DD from GlobeNewswire URL path."""
-        m = self._GNW_DATE_RE.search(url)
-        if m:
-            return m.group(1).replace("/", "-")
-        return None
-
-    def _parse_headline_from_soup(self, soup, url):
-        headline = None
-        for selector in ["h1.article-headline", "h1.main-title", "h1"]:
-            tag = soup.select_one(selector)
-            if tag and tag.get_text(strip=True):
-                headline = tag.get_text(strip=True)
-                break
-        if not headline:
-            return None
-        pub_date = self.date_from_url(url)
-        if not pub_date:
-            meta = soup.find("meta", attrs={"property": "article:published_time"})
-            if meta and meta.get("content"):
-                pub_date = meta["content"][:10]
-        return {"headline": headline, "source_url": url, "date": pub_date}
-
-    def fetch_page_headline(self, url):
-        resp = _fetch(url)
-        if resp is None:
-            return None
-        soup = BeautifulSoup(resp.text, "lxml")
-        return self._parse_headline_from_soup(soup, url)
-
-    def sitemap_urls_for_month(self, year, month):
-        """Get press release URLs from Google News sitemap.
-
-        Note: GlobeNewswire's sitemap only contains recent articles (~2 days).
-        For historical months this will return 0 URLs.
-        """
-        month_str = f"{year:04d}-{month:02d}"
-        resp = _fetch(self.SITEMAP_URL, delay=SITEMAP_DELAY)
-        if resp is None:
-            logger.warning(f"{self.NAME}: failed to fetch news sitemap")
-            return []
-
-        month_prefix = f"/{year:04d}/{month:02d}/"
-        urls = _parse_sitemap_urls(
-            resp.content,
-            url_filter=lambda u, _mp=month_prefix: "/news-release/" in u and _mp in u,
-        )
-        logger.info(f"{self.NAME}: {len(urls)} URLs for {month_str}")
-        if not urls:
-            logger.info(
-                f"{self.NAME}: Google News sitemap only has recent articles; "
-                f"{month_str} may not be available via sitemap"
-            )
-        return urls
-
-
-ALL_SCRAPERS = [PRNewswireScraper(), BusinessWireScraper(), GlobeNewswireScraper()]
+ALL_SCRAPERS = [PRNewswireScraper()]
 
 
 # ---------------------------------------------------------------------------
@@ -628,7 +462,8 @@ def _fetch_headlines_by_day(scraper, urls, done_days, shutdown):
     total = len(urls)
 
     def _worker(url):
-        resp = _fetch_thread(url, delay=REQUEST_DELAY)
+        session = _get_thread_session()
+        resp = _fetch(url, delay=REQUEST_DELAY, session=session)
         if resp is None:
             return None
         soup = BeautifulSoup(resp.text, "lxml")
