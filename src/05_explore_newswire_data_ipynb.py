@@ -24,6 +24,7 @@
 # ## 1. Imports & Config
 
 # %%
+import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -523,24 +524,24 @@ fig, ax = plt.subplots(figsize=(14, 5))
 ax.plot(
     nw_daily["pub_date"].to_list(),
     nw_daily["nw_total"].to_list(),
-    color="lightcoral",
-    alpha=0.4,
+    color="tab:orange",
+    alpha=0.7,
     linewidth=0.8,
     label="Newswire total",
 )
 ax.plot(
     rp_daily["date"].to_list(),
     rp_daily["rp_total"].to_list(),
-    color="plum",
-    alpha=0.4,
+    color="tab:green",
+    alpha=0.7,
     linewidth=0.8,
     label="RavenPack total",
 )
 ax.plot(
     cw_daily["date"].to_list(),
     cw_daily["matched"].to_list(),
-    color="steelblue",
-    alpha=0.8,
+    color="tab:blue",
+    alpha=0.9,
     linewidth=1.0,
     label="Matched (crosswalk)",
 )
@@ -550,6 +551,81 @@ ax.set_ylabel("Articles per Day")
 ax.set_title(
     "Daily Headline Counts: Newswire, RavenPack, and Matched", fontweight="bold"
 )
+ax.legend(fontsize=9)
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ### Data gap check
+#
+# Identify months with zero or very few headlines in each source to flag
+# potential scraping gaps or missing data.
+
+# %%
+date_min = min(nw_full["pub_date"].min(), rp_full["date"].min(), cw["date"].min())
+date_max = max(nw_full["pub_date"].max(), rp_full["date"].max(), cw["date"].max())
+
+all_months = pl.date_range(
+    date_min.replace(day=1),
+    date_max.replace(day=1),
+    interval="1mo",
+    eager=True,
+).alias("month")
+
+nw_monthly = (
+    nw_full.with_columns(pl.col("pub_date").dt.truncate("1mo").alias("month"))
+    .group_by("month")
+    .agg(pl.len().alias("nw_count"), pl.col("pub_date").n_unique().alias("nw_days"))
+    .sort("month")
+)
+
+rp_monthly = (
+    rp_full.with_columns(pl.col("date").dt.truncate("1mo").alias("month"))
+    .group_by("month")
+    .agg(pl.len().alias("rp_count"), pl.col("date").n_unique().alias("rp_days"))
+    .sort("month")
+)
+
+cw_gap = (
+    pl.DataFrame({"month": all_months})
+    .join(nw_monthly, on="month", how="left")
+    .join(rp_monthly, on="month", how="left")
+    .fill_null(0)
+    .sort("month")
+)
+
+sparse_months = cw_gap.filter(
+    (pl.col("nw_count") < 50) | (pl.col("rp_count") < 50)
+)
+print(f"Months with < 50 headlines in either source: {len(sparse_months)}")
+if len(sparse_months) > 0:
+    print(sparse_months)
+else:
+    print("No months with significant gaps detected.")
+
+# %%
+fig, ax = plt.subplots(figsize=(14, 4))
+months = cw_gap["month"].to_list()
+bar_width = 20
+ax.bar(
+    months,
+    cw_gap["nw_count"].to_list(),
+    width=bar_width,
+    color="tab:orange",
+    alpha=0.7,
+    label="Newswire",
+)
+ax.bar(
+    [m + datetime.timedelta(days=bar_width) for m in months],
+    cw_gap["rp_count"].to_list(),
+    width=bar_width,
+    color="tab:green",
+    alpha=0.7,
+    label="RavenPack",
+)
+ax.set_xlabel("Month")
+ax.set_ylabel("Headlines")
+ax.set_title("Monthly Headline Counts by Source", fontweight="bold")
 ax.legend(fontsize=9)
 fig.tight_layout()
 plt.show()

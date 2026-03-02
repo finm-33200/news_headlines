@@ -252,6 +252,19 @@ def _parse_sitemap_news_entries(xml_bytes):
 # ---------------------------------------------------------------------------
 
 
+_WAYBACK_TIMESTAMPS = {
+    "2021-03": "20250402102233",
+    "2021-09": "20250402095524",
+    "2021-10": "20240101020755",
+    "2021-11": "20260102151312",
+    "2022-06": "20250218160245",
+    "2022-07": "20240502014628",
+    "2022-08": "20240501203810",
+    "2023-01": "20240101074937",
+    "2023-10": "20240101014022",
+}
+
+
 class PRNewswireScraper:
     """Scraper for PR Newswire (prnewswire.com)."""
 
@@ -278,6 +291,49 @@ class PRNewswireScraper:
         """PR Newswire URLs don't contain dates."""
         return None
 
+    def _fetch_sitemap_xml(self, year, month):
+        """Fetch and decompress the gzipped monthly sitemap.
+
+        Tries the live PR Newswire URL first.  If decompression fails
+        (known-corrupted months), falls back to an archived copy from
+        the Wayback Machine.  Returns decompressed XML bytes, or None.
+        """
+        month_str = f"{year:04d}-{month:02d}"
+        abbr = self._MONTH_ABBR.get(month)
+        if abbr is None:
+            return None
+
+        gz_url = f"https://www.prnewswire.com/Sitemap_Index_{abbr}_{year}.xml.gz"
+        logger.info(f"{self.NAME}: fetching {gz_url}")
+        resp = _fetch(gz_url, delay=SITEMAP_DELAY)
+
+        if resp is not None:
+            try:
+                return gzip.decompress(resp.content)
+            except Exception as e:
+                logger.warning(f"{self.NAME}: decompress failed for {month_str}: {e}")
+
+        # Fallback: try the Wayback Machine
+        ts = _WAYBACK_TIMESTAMPS.get(month_str)
+        if ts is None:
+            logger.warning(f"{self.NAME}: no Wayback timestamp for {month_str}")
+            return None
+
+        wb_url = f"https://web.archive.org/web/{ts}id_/{gz_url}"
+        logger.info(f"{self.NAME}: trying Wayback Machine: {wb_url}")
+        resp = _fetch(wb_url, delay=SITEMAP_DELAY)
+        if resp is None:
+            logger.warning(f"{self.NAME}: Wayback fetch failed for {month_str}")
+            return None
+
+        try:
+            xml_bytes = gzip.decompress(resp.content)
+            logger.info(f"{self.NAME}: recovered {month_str} from Wayback Machine")
+            return xml_bytes
+        except Exception as e:
+            logger.warning(f"{self.NAME}: Wayback decompress failed for {month_str}: {e}")
+            return None
+
     def _parse_headline_from_soup(self, soup, url):
         headline = None
         for selector in ["h1.release-header__title", "h1"]:
@@ -300,26 +356,12 @@ class PRNewswireScraper:
 
         PR Newswire hosts compressed sitemaps at e.g.
         ``Sitemap_Index_Jan_2025.xml.gz``, listed in ``sitemap-gz.xml``.
+        Falls back to the Wayback Machine for corrupted archives.
         """
         month_str = f"{year:04d}-{month:02d}"
-        abbr = self._MONTH_ABBR.get(month)
-        if abbr is None:
-            logger.warning(f"{self.NAME}: invalid month {month}")
-            return []
-
-        # Direct URL for the gzipped monthly sitemap
-        gz_url = f"https://www.prnewswire.com/Sitemap_Index_{abbr}_{year}.xml.gz"
-        logger.info(f"{self.NAME}: fetching {gz_url}")
-
-        resp = _fetch(gz_url, delay=SITEMAP_DELAY)
-        if resp is None:
-            logger.warning(f"{self.NAME}: failed to fetch gz sitemap for {month_str}")
-            return []
-
-        try:
-            xml_bytes = gzip.decompress(resp.content)
-        except Exception as e:
-            logger.warning(f"{self.NAME}: failed to decompress gz sitemap: {e}")
+        xml_bytes = self._fetch_sitemap_xml(year, month)
+        if xml_bytes is None:
+            logger.warning(f"{self.NAME}: no sitemap available for {month_str}")
             return []
 
         urls = _parse_sitemap_urls(
@@ -335,21 +377,11 @@ class PRNewswireScraper:
         Returns a list of {headline, source_url, date} dicts if the sitemap
         contains Google News metadata (<news:title>), or None if no metadata
         is found and callers should fall back to per-page fetches.
+        Falls back to the Wayback Machine for corrupted archives.
         """
         month_str = f"{year:04d}-{month:02d}"
-        abbr = self._MONTH_ABBR.get(month)
-        if abbr is None:
-            return None
-        gz_url = f"https://www.prnewswire.com/Sitemap_Index_{abbr}_{year}.xml.gz"
-        logger.info(f"{self.NAME}: fetching sitemap for metadata: {gz_url}")
-        resp = _fetch(gz_url, delay=SITEMAP_DELAY)
-        if resp is None:
-            logger.warning(f"{self.NAME}: failed to fetch gz sitemap for {month_str}")
-            return None
-        try:
-            xml_bytes = gzip.decompress(resp.content)
-        except Exception as e:
-            logger.warning(f"{self.NAME}: failed to decompress gz sitemap: {e}")
+        xml_bytes = self._fetch_sitemap_xml(year, month)
+        if xml_bytes is None:
             return None
         entries = _parse_sitemap_news_entries(xml_bytes)
         if entries:
