@@ -299,8 +299,7 @@ plt.show()
 #
 # Source script: `pull_free_newswires.py`
 #
-# Press release headlines scraped from three major free wire services
-# (PR Newswire, Business Wire, GlobeNewswire) via sitemap crawling,
+# Press release headlines scraped from PR Newswire via sitemap crawling,
 # then filtered locally to S&P 500 companies using normalized company
 # name substring matching. Data is stored as a Hive-partitioned data lake
 # (`newswire_sp500_headlines/year=YYYY/month=MM/data.parquet`).
@@ -314,7 +313,7 @@ plt.show()
 # | `date` | Publication date (YYYY-MM-DD) |
 # | `headline` | Press release headline text |
 # | `source_url` | Full URL of the press release |
-# | `source_name` | Wire service name (PR Newswire / Business Wire / GlobeNewswire) |
+# | `source_name` | Wire service name (PR Newswire) |
 # | `matched_company` | S&P 500 company name matched via substring |
 # | `permno` | CRSP permanent security identifier |
 # | `ticker` | Stock ticker symbol |
@@ -322,14 +321,14 @@ plt.show()
 # %%
 import re
 
-from pull_free_newswires import ALL_SCRAPERS, load_newswire_headlines
+from pull_free_newswires import load_newswire_headlines
 from pull_sp500_constituents import load_sp500_names_lookup, normalize_company_name
 
 raw = load_newswire_headlines().collect()
 
 # Map Hive partition key to human-readable source name
 if "source" in raw.columns and "source_name" not in raw.columns:
-    source_map = {s.SOURCE_KEY: s.NAME for s in ALL_SCRAPERS}
+    source_map = {"prnewswire": "PR Newswire"}
     raw = raw.with_columns(
         pl.col("source")
         .replace_strict(source_map, default="Unknown")
