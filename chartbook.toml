@@ -53,6 +53,11 @@ notebook_path = "_output/05_explore_newswire_data_ipynb.ipynb"
 
 [dataframes]
 
+[dataframes.newswire_ravenpack_crosswalk]
+dataframe_name = "Newswire-RavenPack Crosswalk"
+short_description_df = "Fuzzy-match crosswalk linking free newswire headlines to RavenPack DJ Press Release headlines, enabling transfer of entity identifiers and sentiment metadata."
+path_to_parquet_data = "_data/newswire_ravenpack_crosswalk.parquet"
+dataframe_docs_path = "docs_src/dataframes/newswire_ravenpack_crosswalk.md"
 
 [charts]
 

@@ -161,6 +161,24 @@ def task_pull():
     }
 
 
+def task_create_crosswalk():
+    """Fuzzy-match crosswalk between newswire and RavenPack headlines"""
+    return {
+        "actions": [
+            "ipython ./src/settings.py",
+            "ipython ./src/create_newswire_ravenpack_crosswalk.py",
+        ],
+        "targets": [DATA_DIR / "newswire_ravenpack_crosswalk.parquet"],
+        "file_dep": [
+            "./src/settings.py",
+            "./src/create_newswire_ravenpack_crosswalk.py",
+            "./src/pull_free_newswires.py",
+            DATA_DIR / "ravenpack_djpr.parquet",
+        ],
+        "clean": [],
+    }
+
+
 notebook_tasks = {
     "01_data_sources_overview_ipynb": {
         "path": "./src/01_data_sources_overview_ipynb.py",
