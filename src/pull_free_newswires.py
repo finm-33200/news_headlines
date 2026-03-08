@@ -446,6 +446,29 @@ def _save_day_parquet(headlines, base_dir, source_key, year, month, day):
     return out_path
 
 
+def _month_complete_marker(base_dir, source_key, year, month):
+    """Path for a marker file indicating a month has been fully crawled."""
+    return (
+        base_dir
+        / f"source={source_key}"
+        / f"year={year:04d}"
+        / f"month={month:02d}"
+        / ".complete"
+    )
+
+
+def _mark_month_complete(base_dir, source_key, year, month):
+    """Write a marker file after a month is fully crawled."""
+    marker = _month_complete_marker(base_dir, source_key, year, month)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"crawled {year:04d}-{month:02d}\n")
+
+
+def _is_month_complete(base_dir, source_key, year, month):
+    """Check whether a month has already been fully crawled."""
+    return _month_complete_marker(base_dir, source_key, year, month).exists()
+
+
 # ---------------------------------------------------------------------------
 # Graceful shutdown
 # ---------------------------------------------------------------------------
@@ -552,6 +575,16 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     """
     source_key = scraper.SOURCE_KEY
     month_str = f"{year:04d}-{month:02d}"
+
+    # If this month was already fully crawled (marker file exists), skip entirely
+    if _is_month_complete(output_dir, source_key, year, month):
+        done_days = _completed_days(output_dir, source_key, year, month)
+        logger.info(
+            f"  {scraper.NAME}: {month_str} already crawled "
+            f"({len(done_days)} days on disk), skipping"
+        )
+        return (0, 0)
+
     done_days = _completed_days(output_dir, source_key, year, month)
 
     # If every expected day is already on disk, skip entirely
@@ -561,37 +594,57 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
             f"  {scraper.NAME}: {month_str} complete "
             f"({len(done_days)}/{expected_days} days on disk), skipping"
         )
+        _mark_month_complete(output_dir, source_key, year, month)
+        return (0, 0)
+
+    # Fetch the sitemap XML once (avoids double HTTP request)
+    xml_bytes = scraper._fetch_sitemap_xml(year, month)
+    if xml_bytes is None:
+        logger.warning(f"{scraper.NAME}: no sitemap available for {month_str}")
+        _mark_month_complete(output_dir, source_key, year, month)
         return (0, 0)
 
     # --- Fast path: headlines from sitemap metadata (no page fetches) ---
-    if hasattr(scraper, "sitemap_entries_for_month"):
-        entries = scraper.sitemap_entries_for_month(year, month)
-        if entries is not None:
-            month_prefix = f"{year:04d}-{month:02d}"
-            valid = [
-                e
-                for e in entries
-                if e.get("date", "").startswith(month_prefix)
-                and int(e["date"][8:10]) not in done_days
-            ]
-            headlines_by_day = defaultdict(list)
-            for e in valid:
-                headlines_by_day[int(e["date"][8:10])].append(e)
-            headlines_saved = 0
-            for day, day_headlines in sorted(headlines_by_day.items()):
-                _save_day_parquet(
-                    day_headlines, output_dir, source_key, year, month, day
-                )
-                headlines_saved += len(day_headlines)
-            logger.info(
-                f"  {scraper.NAME}: {month_str} done via sitemap metadata "
-                f"({headlines_saved} headlines, 0 page fetches)"
+    entries = _parse_sitemap_news_entries(xml_bytes)
+    if entries:
+        logger.info(
+            f"{scraper.NAME}: {len(entries)} entries with sitemap metadata for {month_str}"
+        )
+        month_prefix = f"{year:04d}-{month:02d}"
+        valid = [
+            e
+            for e in entries
+            if e.get("date", "").startswith(month_prefix)
+            and int(e["date"][8:10]) not in done_days
+        ]
+        headlines_by_day = defaultdict(list)
+        for e in valid:
+            headlines_by_day[int(e["date"][8:10])].append(e)
+        headlines_saved = 0
+        for day, day_headlines in sorted(headlines_by_day.items()):
+            _save_day_parquet(
+                day_headlines, output_dir, source_key, year, month, day
             )
-            return (0, headlines_saved)
+            headlines_saved += len(day_headlines)
+        _mark_month_complete(output_dir, source_key, year, month)
+        logger.info(
+            f"  {scraper.NAME}: {month_str} done via sitemap metadata "
+            f"({headlines_saved} headlines, 0 page fetches)"
+        )
+        return (0, headlines_saved)
 
     # --- Slow path: fetch each press-release page concurrently ---
-    urls = scraper.sitemap_urls_for_month(year, month)
+    logger.info(
+        f"{scraper.NAME}: no <news:title> in sitemap for {month_str}; "
+        f"falling back to per-page fetches"
+    )
+    urls = _parse_sitemap_urls(
+        xml_bytes,
+        url_filter=lambda u: "/news-release" in u.lower(),
+    )
+    logger.info(f"{scraper.NAME}: {len(urls)} URLs for {month_str}")
     if not urls:
+        _mark_month_complete(output_dir, source_key, year, month)
         return (0, 0)
 
     # For scrapers with date-in-URL: pre-filter to skip URLs for completed days
@@ -623,6 +676,7 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     if shutdown.should_stop:
         return None
 
+    _mark_month_complete(output_dir, source_key, year, month)
     return (pages_fetched, headlines_saved)
 
 
