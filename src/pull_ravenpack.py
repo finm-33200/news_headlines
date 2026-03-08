@@ -12,6 +12,9 @@ Key filters (matching Chen, Kelly, and Xiu 2022):
 - Single-firm stories only (one entity per provider story)
 """
 
+import gc
+import os
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -49,66 +52,69 @@ def pull_ravenpack(
     db = wrds.Connection(wrds_username=wrds_username)
     frames = []
 
-    for year in range(start_year, end_year + 1):
-        table = f"ravenpack_dj.rpa_djpr_equities_{year}"
-        print(f"Pulling {table}...")
+    try:
+        for year in range(start_year, end_year + 1):
+            table = f"ravenpack_dj.rpa_djpr_equities_{year}"
+            print(f"Pulling {table}...")
 
-        query = f"""
-        WITH single_firm AS (
-            SELECT provider_id, provider_story_id
-            FROM {table}
-            WHERE entity_type = 'COMP'
-              AND country_code = 'US'
-              AND relevance >= 90
-            GROUP BY provider_id, provider_story_id
-            HAVING COUNT(DISTINCT rp_entity_id) = 1
-        )
-        SELECT
-            a.timestamp_utc,
-            a.rp_story_id,
-            a.rp_entity_id,
-            a.entity_type,
-            a.entity_name,
-            a.country_code,
-            a.relevance,
-            a.event_sentiment_score,
-            a.event_relevance,
-            a.event_similarity_key,
-            a.event_similarity_days,
-            a.topic,
-            a."group" AS rp_group,
-            a."type" AS rp_type,
-            a.sub_type,
-            a.property,
-            a.fact_level,
-            a.category,
-            a.news_type,
-            a.rp_source_id,
-            a.source_name,
-            a.provider_id,
-            a.provider_story_id,
-            a.headline,
-            a.css
-        FROM {table} a
-        INNER JOIN single_firm sf
-            ON a.provider_id = sf.provider_id
-            AND a.provider_story_id = sf.provider_story_id
-        WHERE a.entity_type = 'COMP'
-          AND a.country_code = 'US'
-          AND a.relevance >= 90
-          AND a.timestamp_utc >= '{start_date}'
-          AND a.timestamp_utc <= '{end_date}'
-        """
+            query = f"""
+            WITH single_firm AS (
+                SELECT provider_id, provider_story_id
+                FROM {table}
+                WHERE entity_type = 'COMP'
+                  AND country_code = 'US'
+                  AND relevance >= 90
+                GROUP BY provider_id, provider_story_id
+                HAVING COUNT(DISTINCT rp_entity_id) = 1
+            )
+            SELECT
+                a.timestamp_utc,
+                a.rp_story_id,
+                a.rp_entity_id,
+                a.entity_type,
+                a.entity_name,
+                a.country_code,
+                a.relevance,
+                a.event_sentiment_score,
+                a.event_relevance,
+                a.event_similarity_key,
+                a.event_similarity_days,
+                a.topic,
+                a."group" AS rp_group,
+                a."type" AS rp_type,
+                a.sub_type,
+                a.property,
+                a.fact_level,
+                a.category,
+                a.news_type,
+                a.rp_source_id,
+                a.source_name,
+                a.provider_id,
+                a.provider_story_id,
+                a.headline,
+                a.css
+            FROM {table} a
+            INNER JOIN single_firm sf
+                ON a.provider_id = sf.provider_id
+                AND a.provider_story_id = sf.provider_story_id
+            WHERE a.entity_type = 'COMP'
+              AND a.country_code = 'US'
+              AND a.relevance >= 90
+              AND a.timestamp_utc >= '{start_date}'
+              AND a.timestamp_utc <= '{end_date}'
+            """
 
-        try:
-            df_year = db.raw_sql(query)
-        except Exception as e:
-            print(f"  {table}: skipping (table may not exist: {e})")
-            continue
-        print(f"  {table}: {len(df_year):,} rows")
-        frames.append(df_year)
-
-    db.close()
+            try:
+                df_year = db.raw_sql(query)
+            except Exception as e:
+                print(f"  {table}: skipping (table may not exist: {e})")
+                continue
+            print(f"  {table}: {len(df_year):,} rows")
+            frames.append(df_year)
+    finally:
+        db.close()
+        del db
+        gc.collect()
 
     df = pd.concat(frames, ignore_index=True)
     print(f"Total RavenPack headlines: {len(df):,}")
@@ -129,3 +135,10 @@ if __name__ == "__main__":
         df = pull_ravenpack(start_date=RP_START_DATE)
         df.to_parquet(path)
         print(f"Saved to {path}")
+        del df
+        gc.collect()
+    # Force-exit to avoid Windows access violation (0xC0000005) during
+    # interpreter shutdown caused by native library cleanup (psycopg2/pyarrow).
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
