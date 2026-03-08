@@ -24,8 +24,6 @@ BASE_DIR = config("BASE_DIR")
 DATA_DIR = config("DATA_DIR")
 MANUAL_DATA_DIR = config("MANUAL_DATA_DIR")
 OUTPUT_DIR = config("OUTPUT_DIR")
-OS_TYPE = config("OS_TYPE")
-USER = config("USER")
 
 ## Helpers for handling Jupyter Notebook tasks
 environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
@@ -47,15 +45,18 @@ def jupyter_clear_output(notebook_path):
 
 
 def mv(from_path, to_path):
-    """Move a file to a folder"""
-    from_path = Path(from_path)
-    to_path = Path(to_path)
-    to_path.mkdir(parents=True, exist_ok=True)
-    if OS_TYPE == "nix":
-        command = f"mv {from_path} {to_path}"
-    else:
-        command = f"move {from_path} {to_path}"
-    return command
+    """Create a Python action for moving a file to a folder."""
+
+    def _mv():
+        src = Path(from_path)
+        dst = Path(to_path)
+        dst.mkdir(parents=True, exist_ok=True)
+        final = dst / src.name
+        if final.exists():
+            final.unlink()
+        shutil.move(str(src), str(dst))
+
+    return _mv
 
 
 def copy_file(origin_path, destination_path, mkdir=True):
