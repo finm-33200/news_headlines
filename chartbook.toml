@@ -53,6 +53,24 @@ notebook_path = "_output/05_explore_newswire_data_ipynb.ipynb"
 
 [dataframes]
 
+[dataframes.gdelt_sp500_headlines]
+dataframe_name = "GDELT S&P 500 Headlines"
+short_description_df = "GDELT GKG headlines filtered to S&P 500 companies via BigQuery. Hive-partitioned by year and month, covering Feb 2015 onward."
+path_to_parquet_data = "_data/gdelt_sp500_headlines/**/*.parquet"
+dataframe_docs_path = "docs_src/dataframes/gdelt_sp500_headlines.md"
+
+[dataframes.ravenpack_djpr]
+dataframe_name = "RavenPack DJ Press Releases"
+short_description_df = "RavenPack Dow Jones Press Release headlines for US companies, filtered to high-relevance single-firm stories (2000-present)."
+path_to_parquet_data = "_data/ravenpack_djpr.parquet"
+dataframe_docs_path = "docs_src/dataframes/ravenpack_djpr.md"
+
+[dataframes.newswire_headlines]
+dataframe_name = "Newswire Headlines"
+short_description_df = "Free newswire headlines scraped from PR Newswire via sitemap crawling. Hive-partitioned by source, year, month, and day."
+path_to_parquet_data = "_data/newswire_headlines/**/*.parquet"
+dataframe_docs_path = "docs_src/dataframes/newswire_headlines.md"
+
 [dataframes.newswire_ravenpack_crosswalk]
 dataframe_name = "Newswire-RavenPack Crosswalk"
 short_description_df = "Fuzzy-match crosswalk linking free newswire headlines to RavenPack DJ Press Release headlines, enabling transfer of entity identifiers and sentiment metadata."
