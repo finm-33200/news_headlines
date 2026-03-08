@@ -16,12 +16,13 @@
 # # Data Sources Overview
 #
 # Quick look at each raw dataset pulled by the pipeline.
-# Four sources are currently collected:
+# Five sources are currently collected or derived:
 #
 # 1. **RavenPack** Dow Jones Press Release headlines (via WRDS)
 # 2. **S&P 500 Constituents** historical membership (via WRDS/CRSP)
 # 3. **GDELT** S&P 500–filtered headlines (via BigQuery)
 # 4. **Free Newswires** S&P 500–filtered headlines (PR Newswire, Business Wire, GlobeNewswire)
+# 5. **Newswire–RavenPack Crosswalk** fuzzy-matched headline bridge between free newswires and RavenPack
 
 # %%
 from pathlib import Path
@@ -69,6 +70,30 @@ print(f"Column names: {cols}")
 
 # %%
 rp.head(5).collect()
+
+# %% [markdown]
+# ### Full headline examples by news type
+
+# %%
+for row in (
+    rp.group_by("news_type")
+    .agg(pl.len().alias("n"))
+    .sort("n", descending=True)
+    .head(6)
+    .collect()
+    .iter_rows(named=True)
+):
+    sample = (
+        rp.filter(pl.col("news_type") == row["news_type"])
+        .select("headline")
+        .head(3)
+        .collect()["headline"]
+        .to_list()
+    )
+    print(f"── {row['news_type']} ({row['n']:,} articles) ──")
+    for h in sample:
+        print(f"  • {h}")
+    print()
 
 # %% [markdown]
 # ### Date range
@@ -121,6 +146,49 @@ ax.set_ylabel("Articles")
 ax.set_title("RavenPack DJPR — articles per month")
 fig.tight_layout()
 plt.show()
+
+# %% [markdown]
+# ### Headline-text duplicates
+#
+# Each row is unique by `(rp_story_id, rp_entity_id)`, but the same
+# headline string can appear on multiple story IDs (re-transmissions,
+# corrections, etc.).  How prevalent is this?
+
+# %%
+n_total = rp.select(pl.len()).collect().item()
+n_unique_story = rp.select(pl.col("rp_story_id").n_unique()).collect().item()
+n_unique_headline = rp.select(pl.col("headline").n_unique()).collect().item()
+n_unique_headline_date = (
+    rp.with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
+    .select(pl.struct("headline", "date").n_unique())
+    .collect()
+    .item()
+)
+
+print(f"Total rows:                    {n_total:>12,}")
+print(f"Unique rp_story_id:            {n_unique_story:>12,}")
+print(f"Unique headline texts:         {n_unique_headline:>12,}")
+print(f"Unique (headline, date) pairs: {n_unique_headline_date:>12,}")
+
+# %% [markdown]
+# ### Examples: same headline, different story IDs
+
+# %%
+rp_collected = rp.collect()
+dup_headlines = (
+    rp_collected.group_by("headline")
+    .agg(
+        pl.col("rp_story_id").n_unique().alias("n_stories"),
+        pl.len().alias("n_rows"),
+    )
+    .filter(pl.col("n_stories") > 1)
+    .sort("n_stories", descending=True)
+)
+print(f"Headlines appearing under multiple story IDs: {len(dup_headlines):,}")
+print()
+for row in dup_headlines.head(5).iter_rows(named=True):
+    print(f"  \"{row['headline']}\"")
+    print(f"    → {row['n_stories']} distinct story IDs, {row['n_rows']} total rows")
 
 # %% [markdown]
 # ---
@@ -233,6 +301,31 @@ print(f"Column names: {cols_gd}")
 
 # %%
 gd.head(5).collect()
+
+# %% [markdown]
+# ### Full headline examples by source
+
+# %%
+top_sources = (
+    gd.group_by("source_name")
+    .agg(pl.len().alias("n"))
+    .sort("n", descending=True)
+    .head(5)
+    .collect()["source_name"]
+    .to_list()
+)
+for src in top_sources:
+    sample = (
+        gd.filter(pl.col("source_name") == src)
+        .select("headline")
+        .head(3)
+        .collect()["headline"]
+        .to_list()
+    )
+    print(f"── {src} ──")
+    for h in sample:
+        print(f"  • {h}")
+    print()
 
 # %% [markdown]
 # ### Date range
@@ -371,6 +464,13 @@ print(f"Column names: {cols_nw}")
 nw.head(5).collect()
 
 # %% [markdown]
+# ### Full headline examples
+
+# %%
+for h in nw.select("headline").head(8).collect()["headline"].to_list():
+    print(f"  • {h}")
+
+# %% [markdown]
 # ### Headlines by wire service
 
 # %%
@@ -391,5 +491,112 @@ nw_collected = nw.collect()
     .sort("n", descending=True)
     .head(15)
 )
+
+# %% [markdown]
+# ---
+# ## 5. Newswire–RavenPack Crosswalk — `newswire_ravenpack_crosswalk.parquet`
+#
+# Source script: `create_newswire_ravenpack_crosswalk.py`
+#
+# Fuzzy-matched bridge between free newswire headlines and RavenPack DJ Press
+# Release headlines. Each row is the single best RavenPack match for a given
+# newswire headline on the same calendar date, kept only when the
+# `token_sort_ratio` score is ≥ 80. The crosswalk enables enriching free
+# newswire data with RavenPack's entity identifiers and sentiment scores.
+#
+# **Key columns:**
+#
+# | Column | Description |
+# |---|---|
+# | `date` | Calendar date of the matched headlines |
+# | `nw_source_url` | URL of the newswire press release |
+# | `nw_headline` | Original headline from the newswire source |
+# | `nw_source` | Wire service identifier (e.g. `prnewswire`) |
+# | `rp_story_id` | RavenPack unique story identifier |
+# | `rp_entity_id` | RavenPack entity identifier |
+# | `rp_entity_name` | Company name as recorded by RavenPack |
+# | `rp_headline` | Headline text from RavenPack |
+# | `rp_source_name` | News source as classified by RavenPack |
+# | `fuzzy_score` | Token-sort-ratio similarity score (80–100) |
+
+# %%
+cw = pl.scan_parquet(DATA_DIR / "newswire_ravenpack_crosswalk.parquet")
+n_rows_cw = cw.select(pl.len()).collect().item()
+cols_cw = cw.collect_schema().names()
+print(f"Rows: {n_rows_cw:,}  |  Columns: {len(cols_cw)}")
+print(f"Column names: {cols_cw}")
+
+# %% [markdown]
+# ### Example rows
+
+# %%
+cw.head(5).collect()
+
+# %% [markdown]
+# ### Full headline pairs (newswire → RavenPack)
+
+# %%
+pairs = cw.select("nw_headline", "rp_headline", "fuzzy_score").head(6).collect()
+for row in pairs.iter_rows(named=True):
+    print(f"  NW:  {row['nw_headline']}")
+    print(f"  RP:  {row['rp_headline']}")
+    print(f"  score: {row['fuzzy_score']}")
+    print()
+
+# %% [markdown]
+# ### Date range
+
+# %%
+cw.select(
+    pl.col("date").min().alias("earliest"),
+    pl.col("date").max().alias("latest"),
+).collect()
+
+# %% [markdown]
+# ### Fuzzy-score distribution
+
+# %%
+cw_collected = cw.collect()
+print(
+    f"fuzzy_score — mean: {cw_collected['fuzzy_score'].mean():.1f},  "
+    f"median: {cw_collected['fuzzy_score'].median():.1f},  "
+    f"min: {cw_collected['fuzzy_score'].min():.1f},  "
+    f"max: {cw_collected['fuzzy_score'].max():.1f}"
+)
+
+fig, ax = plt.subplots(figsize=(8, 3))
+ax.hist(cw_collected["fuzzy_score"].to_list(), bins=40, color="mediumseagreen", alpha=0.8)
+ax.set_xlabel("Fuzzy score")
+ax.set_ylabel("Count")
+ax.set_title("Newswire–RavenPack crosswalk — fuzzy-score distribution")
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ### Matched headlines per month
+
+# %%
+cw_monthly = (
+    cw_collected.with_columns(pl.col("date").dt.truncate("1mo").alias("month"))
+    .group_by("month")
+    .agg(pl.len().alias("n_matches"))
+    .sort("month")
+)
+
+fig, ax = plt.subplots(figsize=(10, 3))
+ax.bar(
+    cw_monthly["month"].to_list(),
+    cw_monthly["n_matches"].to_list(),
+    width=25,
+    color="mediumseagreen",
+    alpha=0.8,
+)
+ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+fig.autofmt_xdate(rotation=45)
+ax.set_ylabel("Matches")
+ax.set_title("Newswire–RavenPack crosswalk — matched headlines per month")
+fig.tight_layout()
+plt.show()
 
 # %%
