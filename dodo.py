@@ -89,7 +89,7 @@ def copy_file(origin_path, destination_path, mkdir=True):
 def task_config():
     """Create empty directories for data and output if they don't exist"""
     return {
-        "actions": ["ipython ./src/settings.py"],
+        "actions": ["python ./src/settings.py"],
         "targets": [DATA_DIR, OUTPUT_DIR],
         "file_dep": ["./src/settings.py"],
         "clean": [],
@@ -102,8 +102,8 @@ def task_pull():
         "name": "ravenpack",
         "doc": "Pull RavenPack DJ Press Release headlines from WRDS",
         "actions": [
-            "ipython ./src/settings.py",
-            "ipython ./src/pull_ravenpack.py",
+            "python ./src/settings.py",
+            "python ./src/pull_ravenpack.py",
         ],
         "targets": [DATA_DIR / "ravenpack_djpr.parquet"],
         "file_dep": ["./src/settings.py", "./src/pull_ravenpack.py"],
@@ -114,8 +114,8 @@ def task_pull():
         "name": "sp500_constituents",
         "doc": "Pull historical S&P 500 constituents from WRDS",
         "actions": [
-            "ipython ./src/settings.py",
-            "ipython ./src/pull_sp500_constituents.py",
+            "python ./src/settings.py",
+            "python ./src/pull_sp500_constituents.py",
         ],
         "targets": [
             DATA_DIR / "sp500_constituents.parquet",
@@ -130,8 +130,8 @@ def task_pull():
             "name": "cached_scrapes",
             "doc": "Download pre-scraped GDELT and newswire data from Dropbox",
             "actions": [
-                "ipython ./src/settings.py",
-                "ipython ./src/pull_cached_scrapes.py",
+                "python ./src/settings.py",
+                "python ./src/pull_cached_scrapes.py",
             ],
             "targets": [
                 DATA_DIR
@@ -155,8 +155,8 @@ def task_pull():
             "name": "gdelt_sp500_sample",
             "doc": "Pull GDELT GKG headlines filtered to S&P 500 companies (sample month)",
             "actions": [
-                "ipython ./src/settings.py",
-                "ipython ./src/pull_gdelt_sp500_headlines.py",
+                "python ./src/settings.py",
+                "python ./src/pull_gdelt_sp500_headlines.py",
             ],
             "targets": [
                 DATA_DIR
@@ -177,8 +177,8 @@ def task_pull():
             "name": "newswire_sample",
             "doc": "Pull free newswire headlines for sample month via sitemap crawling",
             "actions": [
-                "ipython ./src/settings.py",
-                "ipython ./src/pull_free_newswires.py",
+                "python ./src/settings.py",
+                "python ./src/pull_free_newswires.py",
             ],
             "targets": [
                 DATA_DIR
@@ -197,62 +197,58 @@ def task_pull():
         }
 
 
-def task_create_crosswalk():
-    """Fuzzy-match crosswalks between scraped headlines and RavenPack"""
-    # Newswire crosswalk
-    nw_file_dep = [
-        "./src/settings.py",
-        "./src/create_newswire_ravenpack_crosswalk.py",
-        DATA_DIR / "ravenpack_djpr.parquet",
-    ]
-    if USE_CACHED_SCRAPES:
-        nw_file_dep.append("./src/pull_cached_scrapes.py")
-    else:
-        nw_file_dep.append("./src/pull_free_newswires.py")
+# def task_create_crosswalk():
+#     """Fuzzy-match crosswalks between scraped headlines and RavenPack"""
+#     # Newswire crosswalk
+#     nw_task_dep = (
+#         ["pull:cached_scrapes"] if USE_CACHED_SCRAPES else ["pull:newswire_sample"]
+#     )
+#     yield {
+#         "name": "newswire",
+#         "doc": "Fuzzy-match newswire headlines to RavenPack",
+#         "actions": [
+#             "python ./src/settings.py",
+#             "python ./src/create_newswire_ravenpack_crosswalk.py",
+#         ],
+#         "targets": [DATA_DIR / "newswire_ravenpack_crosswalk.parquet"],
+#         "file_dep": [
+#             "./src/settings.py",
+#             "./src/create_newswire_ravenpack_crosswalk.py",
+#             DATA_DIR / "ravenpack_djpr.parquet",
+#         ],
+#         "task_dep": nw_task_dep,
+#         "clean": [],
+#     }
 
-    yield {
-        "name": "newswire",
-        "doc": "Fuzzy-match newswire headlines to RavenPack",
-        "actions": [
-            "ipython ./src/settings.py",
-            "ipython ./src/create_newswire_ravenpack_crosswalk.py",
-        ],
-        "targets": [DATA_DIR / "newswire_ravenpack_crosswalk.parquet"],
-        "file_dep": nw_file_dep,
-        "clean": [],
-    }
-
-    # GDELT crosswalk
-    gdelt_file_dep = [
-        "./src/settings.py",
-        "./src/create_gdelt_ravenpack_crosswalk.py",
-        "./src/create_newswire_ravenpack_crosswalk.py",  # imports normalize_headline
-        DATA_DIR / "ravenpack_djpr.parquet",
-    ]
-    if USE_CACHED_SCRAPES:
-        gdelt_file_dep.append("./src/pull_cached_scrapes.py")
-    else:
-        gdelt_file_dep.append("./src/pull_gdelt_sp500_headlines.py")
-
-    yield {
-        "name": "gdelt",
-        "doc": "Fuzzy-match GDELT S&P 500 headlines to RavenPack",
-        "actions": [
-            "ipython ./src/settings.py",
-            "ipython ./src/create_gdelt_ravenpack_crosswalk.py",
-        ],
-        "targets": [DATA_DIR / "gdelt_ravenpack_crosswalk.parquet"],
-        "file_dep": gdelt_file_dep,
-        "clean": [],
-    }
+#     # GDELT crosswalk
+#     gdelt_task_dep = (
+#         ["pull:cached_scrapes"] if USE_CACHED_SCRAPES else ["pull:gdelt_sp500_sample"]
+#     )
+#     yield {
+#         "name": "gdelt",
+#         "doc": "Fuzzy-match GDELT S&P 500 headlines to RavenPack",
+#         "actions": [
+#             "python ./src/settings.py",
+#             "python ./src/create_gdelt_ravenpack_crosswalk.py",
+#         ],
+#         "targets": [DATA_DIR / "gdelt_ravenpack_crosswalk.parquet"],
+#         "file_dep": [
+#             "./src/settings.py",
+#             "./src/create_gdelt_ravenpack_crosswalk.py",
+#             "./src/create_newswire_ravenpack_crosswalk.py",  # imports normalize_headline
+#             DATA_DIR / "ravenpack_djpr.parquet",
+#         ],
+#         "task_dep": gdelt_task_dep,
+#         "clean": [],
+#     }
 
 
 def task_create_merged_dataset():
     """Merge scraped headlines with full RavenPack metadata"""
     return {
         "actions": [
-            "ipython ./src/settings.py",
-            "ipython ./src/create_scraped_headlines_with_rp_metadata.py",
+            "python ./src/settings.py",
+            "python ./src/create_scraped_headlines_with_rp_metadata.py",
         ],
         "targets": [DATA_DIR / "scraped_headlines_with_rp_metadata.parquet"],
         "file_dep": [
