@@ -11,6 +11,14 @@ GDELT and RavenPack draw from different source ecosystems (GDELT covers the
 open web while RavenPack is primarily wire services), so the expected match
 rate is lower than the newswire crosswalk (~7% overlap vs ~95%).
 
+## Coverage Note
+
+Although the crosswalk date range may extend back to 2015, **reliable combined
+coverage (newswire + GDELT) begins around late 2019**. Before that, scraped
+headline volume is sparse relative to RavenPack, so the daily match rate is
+very low. Analyses that depend on representative headline coverage should
+filter to dates from late 2019 onward.
+
 ## Data Dictionary
 
 - **date**: `Date` Calendar date of the matched headlines

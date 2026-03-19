@@ -12,6 +12,14 @@ The crosswalk enables transferring RavenPack metadata (entity identifiers,
 company names, sentiment scores) onto the free newswire headlines, which lack
 company identifiers in their raw form.
 
+## Coverage Note
+
+Although the crosswalk date range extends back to 2010, **reliable coverage
+begins around late 2019**. Before that, newswire scrape volume is sparse
+relative to RavenPack, so the daily match rate is very low. Analyses that
+depend on representative headline coverage should filter to dates from
+late 2019 onward.
+
 ## Data Dictionary
 
 - **date**: `Date` Calendar date of the matched headlines
