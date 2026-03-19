@@ -3,12 +3,32 @@ News Headlines
 
 ## About this project
 
-Curate news headlines data from various sources
+This pipeline curates firm-level news headlines for S&P 500 companies from
+multiple sources.
+
+**The problem.** RavenPack provides best-in-class entity-tagged financial
+headlines (with company identifiers, sentiment scores, and relevance ratings),
+but its terms of use prohibit uploading headline text to LLMs like ChatGPT for
+NLP analysis.
+
+**The strategy.** Source headlines independently from free sources, then
+fuzzy-match them to RavenPack to transfer its entity metadata. Only the
+independently-sourced headlines are uploaded to LLMs — RavenPack's text stays
+local, but its metadata travels via the crosswalk.
+
+**Why scraped newswires work best.** RavenPack's content is ~95% wire services
+(Dow Jones, PR Newswire, Business Wire, GlobeNewswire). GDELT crawls the open
+web and shares only ~1–2% of its sources with RavenPack, yielding ~7%
+fuzzy-match overlap. Scraping wire services directly produces much higher match
+rates because we're matching the same underlying press releases.
+
+**Pipeline outputs:**
+- Hive-partitioned headline data lakes from RavenPack, GDELT, and scraped
+  newswires
+- A fuzzy-match crosswalk linking newswire headlines to RavenPack metadata
+  (entity IDs, sentiment, topic classification)
 
 ## Quick Start
-
-The quickest way to run code in this repo is to use the following steps.
-
 
 First, create a virtual environment and activate it:
 ```bash
@@ -20,14 +40,29 @@ Then install the dependencies:
 pip install -r requirements.txt
 ```
 
+Set up your `.env` file with WRDS credentials (copy from `.env.example`):
+```bash
+cp .env.example .env
+# Edit .env and set WRDS_USERNAME=your_username
+```
+
 Finally, run the project tasks:
 ```bash
 doit
 ```
-And that's it!
 
+By default, `doit` downloads the pre-scraped GDELT and newswire headline
+archives from Dropbox instead of running the long scraping pipeline. This
+is controlled by the `USE_CACHED_SCRAPES` setting (default: `True`). The
+only credentials you need are for WRDS (RavenPack and S&P 500 constituents).
 
-### BigQuery Setup (GDELT Data)
+### Advanced: Scraping from Source
+
+To run the GDELT and newswire scrapes yourself instead of using the cached
+Dropbox data, set `USE_CACHED_SCRAPES=0` in your `.env` file. This requires
+additional setup described below.
+
+#### BigQuery Setup (GDELT Data)
 
 The GDELT headline pull requires Google Cloud BigQuery access.
 
@@ -62,16 +97,11 @@ The project must have the BigQuery API enabled. A free Google Cloud account
 works — BigQuery's free tier includes 1 TB of queries per month, which is
 more than sufficient for this project.
 
-**4. Install Python dependencies** (if not already done):
-```bash
-pip install -r requirements.txt
-```
+#### Full Newswire Pull
 
-### Full Newswire Pull
-
-The default `doit` pipeline pulls a single sample month of newswire headlines.
-To crawl the full history (2020 to present) across PR Newswire, Business Wire,
-and GlobeNewswire, run the script directly:
+With `USE_CACHED_SCRAPES=0`, the default `doit` pipeline pulls a single sample
+month of newswire headlines. To crawl the full history (2020 to present), run
+the script directly:
 
 ```bash
 python ./src/pull_free_newswires.py --full
@@ -107,4 +137,3 @@ ruff format .
 # Sort imports, then fix linting issues, then format
 ruff format . && ruff check --select I --fix . && ruff check --fix .
 ```
-

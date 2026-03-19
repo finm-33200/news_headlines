@@ -24,29 +24,19 @@ README_file_path = "./README.md"
 
 
 [notebooks.01_data_sources_overview]
-notebook_name = "Data Sources Overview"
-notebook_description = "Quick look at each raw dataset pulled by the pipeline."
+notebook_name = "Data Sources & Strategy"
+notebook_description = "Pipeline motivation, data source comparison, and summary statistics for each dataset."
 notebook_path = "_output/01_data_sources_overview_ipynb.ipynb"
 
 [notebooks.02_gdelt_sp500_filtering]
-notebook_name = "GDELT S&P 500 Filtering"
-notebook_description = "Analyze name matching between GDELT V2Organizations and S&P 500 companies, false positive detection, and comparison with RavenPack."
+notebook_name = "GDELT Filtering & Data Quality"
+notebook_description = "Filtering funnel, false positive analysis, and full data lake coverage for GDELT S&P 500 headlines."
 notebook_path = "_output/02_gdelt_sp500_filtering_ipynb.ipynb"
 
-[notebooks.03_explore_merge_ravenpack_gdelt]
-notebook_name = "Fuzzy Matching: RavenPack vs GDELT"
-notebook_description = "Explore fuzzy matching between RavenPack and GDELT headlines using rapidfuzz."
-notebook_path = "_output/03_explore_merge_ravenpack_gdelt_ipynb.ipynb"
-
-[notebooks.04_gdelt_full_sample_analysis]
-notebook_name = "GDELT Data Lake Analysis"
-notebook_description = "Explore the full GDELT S&P 500 data lake: temporal coverage, company distribution, source diversity, and data quality."
-notebook_path = "_output/04_gdelt_full_sample_analysis_ipynb.ipynb"
-
-[notebooks.05_explore_newswire_data]
-notebook_name = "Newswire Data Exploration"
-notebook_description = "Explore raw newswire headlines and fuzzy-match against GDELT and RavenPack."
-notebook_path = "_output/05_explore_newswire_data_ipynb.ipynb"
+[notebooks.03_crosswalk_quality]
+notebook_name = "Crosswalk Quality"
+notebook_description = "Match rates, score distribution, and coverage for the newswire-to-RavenPack headline crosswalk."
+notebook_path = "_output/03_crosswalk_quality_ipynb.ipynb"
 
 
 
@@ -76,6 +66,18 @@ dataframe_name = "Newswire-RavenPack Crosswalk"
 short_description_df = "Fuzzy-match crosswalk linking free newswire headlines to RavenPack DJ Press Release headlines, enabling transfer of entity identifiers and sentiment metadata."
 path_to_parquet_data = "_data/newswire_ravenpack_crosswalk.parquet"
 dataframe_docs_path = "docs_src/dataframes/newswire_ravenpack_crosswalk.md"
+
+[dataframes.gdelt_ravenpack_crosswalk]
+dataframe_name = "GDELT-RavenPack Crosswalk"
+short_description_df = "Fuzzy-match crosswalk linking GDELT S&P 500 headlines to RavenPack DJ Press Release headlines."
+path_to_parquet_data = "_data/gdelt_ravenpack_crosswalk.parquet"
+dataframe_docs_path = "docs_src/dataframes/gdelt_ravenpack_crosswalk.md"
+
+[dataframes.scraped_headlines_with_rp_metadata]
+dataframe_name = "Scraped Headlines with RavenPack Metadata"
+short_description_df = "Merged dataset joining scraped headlines (newswire + GDELT) with full RavenPack metadata via fuzzy-match crosswalks. Use 'headline' column for downstream NLP."
+path_to_parquet_data = "_data/scraped_headlines_with_rp_metadata.parquet"
+dataframe_docs_path = "docs_src/dataframes/scraped_headlines_with_rp_metadata.md"
 
 [charts]
 
