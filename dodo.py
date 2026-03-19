@@ -350,6 +350,23 @@ sphinx_targets = [
 ]
 
 
+def task_save_coverage_chart():
+    """Generate the Plotly HTML coverage chart for the chartbook"""
+    return {
+        "actions": [
+            "python ./src/save_coverage_chart.py",
+        ],
+        "targets": [OUTPUT_DIR / "rp_match_rate_coverage.html"],
+        "file_dep": [
+            "./src/save_coverage_chart.py",
+            DATA_DIR / "newswire_ravenpack_crosswalk.parquet",
+            DATA_DIR / "gdelt_ravenpack_crosswalk.parquet",
+            DATA_DIR / "ravenpack_djpr.parquet",
+        ],
+        "clean": True,
+    }
+
+
 def task_build_chartbook_site():
     """Compile Sphinx Docs"""
     notebook_scripts = [
@@ -369,6 +386,7 @@ def task_build_chartbook_site():
         "file_dep": file_dep,
         "task_dep": [
             "run_notebooks",
+            "save_coverage_chart",
         ],
         "clean": True,
     }
