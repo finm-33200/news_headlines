@@ -151,6 +151,10 @@ else:
 defaults["START_DATE"] = datetime.strptime("1913-01-01", "%Y-%m-%d")
 defaults["END_DATE"] = datetime.strptime("2026-12-31", "%Y-%m-%d")
 
+## Cached scrapes flag — when True, download pre-scraped data from Dropbox
+## instead of running GDELT BigQuery pulls and newswire sitemap crawls.
+defaults["USE_CACHED_SCRAPES"] = "True"
+
 
 ## File paths
 def if_relative_make_abs(path):
