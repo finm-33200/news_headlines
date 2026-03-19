@@ -17,7 +17,7 @@ lead_pipeline_developer = "Jeremiah Bejarano"
 contributors = ["Jeremiah Bejarano"]
 software_modules_command = "module load anaconda3/3.11.4 TeXLive/2023"
 runs_on_grid_or_windows_or_other = "Windows/Linux/MacOS"
-git_repo_URL = ""
+git_repo_URL = "https://github.com/finm-33200/news_headlines"
 README_file_path = "./README.md"
 
 [notebooks]
@@ -46,38 +46,57 @@ notebook_path = "_output/03_crosswalk_quality_ipynb.ipynb"
 [dataframes.gdelt_sp500_headlines]
 dataframe_name = "GDELT S&P 500 Headlines"
 short_description_df = "GDELT GKG headlines filtered to S&P 500 companies via BigQuery. Hive-partitioned by year and month, covering Feb 2015 onward."
+data_sources = ["GDELT Global Knowledge Graph"]
+data_providers = ["GDELT Project"]
+links_to_data_providers = ["https://www.gdeltproject.org"]
+topic_tags = ["Headlines", "GDELT", "S&P 500"]
+type_of_data_access = ["Free (BigQuery)"]
+how_is_pulled = "SQL queries via Google BigQuery filtering GDELT GKG records to S&P 500 company mentions."
 path_to_parquet_data = "_data/gdelt_sp500_headlines/**/*.parquet"
 dataframe_docs_path = "docs_src/dataframes/gdelt_sp500_headlines.md"
-
-[dataframes.ravenpack_djpr]
-dataframe_name = "RavenPack DJ Press Releases"
-short_description_df = "RavenPack Dow Jones Press Release headlines for US companies, filtered to high-relevance single-firm stories (2000-present)."
-path_to_parquet_data = "_data/ravenpack_djpr.parquet"
-dataframe_docs_path = "docs_src/dataframes/ravenpack_djpr.md"
 
 [dataframes.newswire_headlines]
 dataframe_name = "Newswire Headlines"
 short_description_df = "Free newswire headlines scraped from PR Newswire via sitemap crawling. Hive-partitioned by source, year, month, and day."
+data_sources = ["PR Newswire"]
+data_providers = ["PR Newswire"]
+links_to_data_providers = ["https://www.prnewswire.com"]
+topic_tags = ["Headlines", "Newswire", "Press Releases"]
+type_of_data_access = ["Free (web scraping)"]
+how_is_pulled = "Python sitemap crawler extracts headlines and metadata from PR Newswire XML sitemaps."
 path_to_parquet_data = "_data/newswire_headlines/**/*.parquet"
 dataframe_docs_path = "docs_src/dataframes/newswire_headlines.md"
-
-[dataframes.newswire_ravenpack_crosswalk]
-dataframe_name = "Newswire-RavenPack Crosswalk"
-short_description_df = "Fuzzy-match crosswalk linking free newswire headlines to RavenPack DJ Press Release headlines, enabling transfer of entity identifiers and sentiment metadata."
-path_to_parquet_data = "_data/newswire_ravenpack_crosswalk.parquet"
-dataframe_docs_path = "docs_src/dataframes/newswire_ravenpack_crosswalk.md"
-
-[dataframes.gdelt_ravenpack_crosswalk]
-dataframe_name = "GDELT-RavenPack Crosswalk"
-short_description_df = "Fuzzy-match crosswalk linking GDELT S&P 500 headlines to RavenPack DJ Press Release headlines."
-path_to_parquet_data = "_data/gdelt_ravenpack_crosswalk.parquet"
-dataframe_docs_path = "docs_src/dataframes/gdelt_ravenpack_crosswalk.md"
 
 [dataframes.scraped_headlines_with_rp_metadata]
 dataframe_name = "Scraped Headlines with RavenPack Metadata"
 short_description_df = "Merged dataset joining scraped headlines (newswire + GDELT) with full RavenPack metadata via fuzzy-match crosswalks. Use 'headline' column for downstream NLP."
+data_sources = ["PR Newswire", "GDELT GKG", "RavenPack DJ Press Releases"]
+data_providers = ["PR Newswire", "GDELT Project", "RavenPack"]
+links_to_data_providers = [
+    "https://www.prnewswire.com",
+    "https://www.gdeltproject.org",
+    "https://www.ravenpack.com",
+]
+topic_tags = ["Headlines", "NLP", "Sentiment", "S&P 500"]
+type_of_data_access = ["Free (web scraping)", "Free (BigQuery)", "Licensed (WRDS)"]
+how_is_pulled = "Newswire headlines scraped via sitemap crawling; GDELT queried via BigQuery; RavenPack accessed via WRDS. Crosswalks built by fuzzy-matching scraped headlines to RavenPack."
 path_to_parquet_data = "_data/scraped_headlines_with_rp_metadata.parquet"
 dataframe_docs_path = "docs_src/dataframes/scraped_headlines_with_rp_metadata.md"
 
 [charts]
+
+[charts.rp_match_rate_coverage]
+chart_name = "Daily RavenPack Match Rate"
+short_description_chart = "Percentage of RavenPack headlines matched by scraped sources (newswire + GDELT) each day."
+dataframe_id = "scraped_headlines_with_rp_metadata"
+topic_tags = ["Coverage", "RavenPack", "Crosswalk", "Headlines"]
+data_series_start_date = "2015-02-01"
+data_frequency = "Daily"
+observation_period = "End of day"
+lag_in_data_release = "1 day"
+data_release_timing = "Next business day"
+seasonal_adjustment = "None"
+units = "Percent"
+path_to_html_chart = "_output/rp_match_rate_coverage.html"
+chart_docs_path = "docs_src/charts/rp_match_rate_coverage.md"
 
