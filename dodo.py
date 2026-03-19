@@ -25,6 +25,15 @@ DATA_DIR = config("DATA_DIR")
 MANUAL_DATA_DIR = config("MANUAL_DATA_DIR")
 OUTPUT_DIR = config("OUTPUT_DIR")
 
+
+def _cast_bool(val):
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("true", "1", "yes")
+
+
+USE_CACHED_SCRAPES = config("USE_CACHED_SCRAPES", cast=_cast_bool)
+
 ## Helpers for handling Jupyter Notebook tasks
 environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
 
@@ -116,65 +125,142 @@ def task_pull():
         "clean": [],
     }
 
-    yield {
-        "name": "gdelt_sp500_sample",
-        "doc": "Pull GDELT GKG headlines filtered to S&P 500 companies (sample month)",
-        "actions": [
-            "ipython ./src/settings.py",
-            "ipython ./src/pull_gdelt_sp500_headlines.py",
-        ],
-        "targets": [
-            DATA_DIR
-            / "gdelt_sp500_headlines"
-            / "year=2025"
-            / "month=01"
-            / "data.parquet"
-        ],
-        "file_dep": [
-            "./src/settings.py",
-            "./src/pull_gdelt_sp500_headlines.py",
-            DATA_DIR / "sp500_names_lookup.parquet",
-        ],
-        "clean": [],
-    }
+    if USE_CACHED_SCRAPES:
+        yield {
+            "name": "cached_scrapes",
+            "doc": "Download pre-scraped GDELT and newswire data from Dropbox",
+            "actions": [
+                "ipython ./src/settings.py",
+                "ipython ./src/pull_cached_scrapes.py",
+            ],
+            "targets": [
+                DATA_DIR
+                / "gdelt_sp500_headlines"
+                / "year=2025"
+                / "month=01"
+                / "data.parquet",
+                DATA_DIR
+                / "newswire_headlines"
+                / "source=prnewswire"
+                / "year=2025"
+                / "month=01"
+                / "day=01"
+                / "data.parquet",
+            ],
+            "file_dep": ["./src/settings.py", "./src/pull_cached_scrapes.py"],
+            "clean": [],
+        }
+    else:
+        yield {
+            "name": "gdelt_sp500_sample",
+            "doc": "Pull GDELT GKG headlines filtered to S&P 500 companies (sample month)",
+            "actions": [
+                "ipython ./src/settings.py",
+                "ipython ./src/pull_gdelt_sp500_headlines.py",
+            ],
+            "targets": [
+                DATA_DIR
+                / "gdelt_sp500_headlines"
+                / "year=2025"
+                / "month=01"
+                / "data.parquet"
+            ],
+            "file_dep": [
+                "./src/settings.py",
+                "./src/pull_gdelt_sp500_headlines.py",
+                DATA_DIR / "sp500_names_lookup.parquet",
+            ],
+            "clean": [],
+        }
 
-    yield {
-        "name": "newswire_sample",
-        "doc": "Pull free newswire headlines for sample month via sitemap crawling",
-        "actions": [
-            "ipython ./src/settings.py",
-            "ipython ./src/pull_free_newswires.py",
-        ],
-        "targets": [
-            DATA_DIR
-            / "newswire_headlines"
-            / "source=prnewswire"
-            / "year=2025"
-            / "month=01"
-            / "day=01"
-            / "data.parquet",
-        ],
-        "file_dep": [
-            "./src/settings.py",
-            "./src/pull_free_newswires.py",
-        ],
-        "clean": [],
-    }
+        yield {
+            "name": "newswire_sample",
+            "doc": "Pull free newswire headlines for sample month via sitemap crawling",
+            "actions": [
+                "ipython ./src/settings.py",
+                "ipython ./src/pull_free_newswires.py",
+            ],
+            "targets": [
+                DATA_DIR
+                / "newswire_headlines"
+                / "source=prnewswire"
+                / "year=2025"
+                / "month=01"
+                / "day=01"
+                / "data.parquet",
+            ],
+            "file_dep": [
+                "./src/settings.py",
+                "./src/pull_free_newswires.py",
+            ],
+            "clean": [],
+        }
 
 
 def task_create_crosswalk():
-    """Fuzzy-match crosswalk between newswire and RavenPack headlines"""
-    return {
+    """Fuzzy-match crosswalks between scraped headlines and RavenPack"""
+    # Newswire crosswalk
+    nw_file_dep = [
+        "./src/settings.py",
+        "./src/create_newswire_ravenpack_crosswalk.py",
+        DATA_DIR / "ravenpack_djpr.parquet",
+    ]
+    if USE_CACHED_SCRAPES:
+        nw_file_dep.append("./src/pull_cached_scrapes.py")
+    else:
+        nw_file_dep.append("./src/pull_free_newswires.py")
+
+    yield {
+        "name": "newswire",
+        "doc": "Fuzzy-match newswire headlines to RavenPack",
         "actions": [
             "ipython ./src/settings.py",
             "ipython ./src/create_newswire_ravenpack_crosswalk.py",
         ],
         "targets": [DATA_DIR / "newswire_ravenpack_crosswalk.parquet"],
+        "file_dep": nw_file_dep,
+        "clean": [],
+    }
+
+    # GDELT crosswalk
+    gdelt_file_dep = [
+        "./src/settings.py",
+        "./src/create_gdelt_ravenpack_crosswalk.py",
+        "./src/create_newswire_ravenpack_crosswalk.py",  # imports normalize_headline
+        DATA_DIR / "ravenpack_djpr.parquet",
+    ]
+    if USE_CACHED_SCRAPES:
+        gdelt_file_dep.append("./src/pull_cached_scrapes.py")
+    else:
+        gdelt_file_dep.append("./src/pull_gdelt_sp500_headlines.py")
+
+    yield {
+        "name": "gdelt",
+        "doc": "Fuzzy-match GDELT S&P 500 headlines to RavenPack",
+        "actions": [
+            "ipython ./src/settings.py",
+            "ipython ./src/create_gdelt_ravenpack_crosswalk.py",
+        ],
+        "targets": [DATA_DIR / "gdelt_ravenpack_crosswalk.parquet"],
+        "file_dep": gdelt_file_dep,
+        "clean": [],
+    }
+
+
+def task_create_merged_dataset():
+    """Merge scraped headlines with full RavenPack metadata"""
+    return {
+        "actions": [
+            "ipython ./src/settings.py",
+            "ipython ./src/create_scraped_headlines_with_rp_metadata.py",
+        ],
+        "targets": [DATA_DIR / "scraped_headlines_with_rp_metadata.parquet"],
         "file_dep": [
             "./src/settings.py",
-            "./src/create_newswire_ravenpack_crosswalk.py",
-            "./src/pull_free_newswires.py",
+            "./src/create_scraped_headlines_with_rp_metadata.py",
             DATA_DIR / "ravenpack_djpr.parquet",
+            DATA_DIR / "newswire_ravenpack_crosswalk.parquet",
+            DATA_DIR / "gdelt_ravenpack_crosswalk.parquet",
         ],
         "clean": [],
     }
@@ -198,6 +284,7 @@ notebook_tasks = {
             / "month=01"
             / "day=01"
             / "data.parquet",
+            DATA_DIR / "newswire_ravenpack_crosswalk.parquet",
         ],
         "targets": [],
     },
@@ -214,32 +301,11 @@ notebook_tasks = {
         ],
         "targets": [],
     },
-    "03_explore_merge_ravenpack_gdelt_ipynb": {
-        "path": "./src/03_explore_merge_ravenpack_gdelt_ipynb.py",
+    "03_crosswalk_quality_ipynb": {
+        "path": "./src/03_crosswalk_quality_ipynb.py",
         "file_dep": [
+            DATA_DIR / "newswire_ravenpack_crosswalk.parquet",
             DATA_DIR / "ravenpack_djpr.parquet",
-            DATA_DIR
-            / "gdelt_sp500_headlines"
-            / "year=2025"
-            / "month=01"
-            / "data.parquet",
-        ],
-        "targets": [],
-    },
-    "04_gdelt_full_sample_analysis_ipynb": {
-        "path": "./src/04_gdelt_full_sample_analysis_ipynb.py",
-        "file_dep": [
-            DATA_DIR
-            / "gdelt_sp500_headlines"
-            / "year=2025"
-            / "month=01"
-            / "data.parquet",
-        ],
-        "targets": [],
-    },
-    "05_explore_newswire_data_ipynb": {
-        "path": "./src/05_explore_newswire_data_ipynb.py",
-        "file_dep": [
             DATA_DIR
             / "newswire_headlines"
             / "source=prnewswire"
@@ -247,12 +313,6 @@ notebook_tasks = {
             / "month=01"
             / "day=01"
             / "data.parquet",
-            DATA_DIR
-            / "gdelt_sp500_headlines"
-            / "year=2025"
-            / "month=01"
-            / "data.parquet",
-            DATA_DIR / "ravenpack_djpr.parquet",
         ],
         "targets": [],
     },
