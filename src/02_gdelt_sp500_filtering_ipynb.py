@@ -85,6 +85,7 @@ from pull_free_newswires import load_newswire_headlines as _load_nw
 
 _nw_total_urls = (
     _load_nw()
+    .with_columns(pl.col("date").str.to_date())
     .filter(
         (pl.col("date") >= _cw["date"].min()) & (pl.col("date") <= _cw["date"].max())
     )
