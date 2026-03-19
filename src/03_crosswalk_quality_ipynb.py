@@ -39,12 +39,18 @@ DATA_DIR = Path(config("DATA_DIR"))
 # %% [markdown]
 # ---
 # ## Key Result: RavenPack Headline Coverage
+#
+# All statistics below are restricted to the crosswalk date range
+# so that newswire and RavenPack counts are directly comparable.
 
 # %%
 cw = pl.read_parquet(DATA_DIR / "newswire_ravenpack_crosswalk.parquet")
 
 nw_full = load_newswire_headlines().collect()
-nw_full = nw_full.with_columns(pl.col("date").cast(pl.Date).alias("pub_date"))
+nw_full = nw_full.with_columns(pl.col("date").cast(pl.Date))
+nw_full = nw_full.filter(
+    (pl.col("date") >= cw["date"].min()) & (pl.col("date") <= cw["date"].max())
+)
 
 rp_full = (
     pl.scan_parquet(DATA_DIR / "ravenpack_djpr.parquet")
@@ -194,12 +200,12 @@ rp_coverage
 
 # %%
 cw_daily = cw.group_by("date").agg(pl.len().alias("matched")).sort("date")
-nw_daily = nw_full.group_by("pub_date").agg(pl.len().alias("nw_total")).sort("pub_date")
+nw_daily = nw_full.group_by("date").agg(pl.len().alias("nw_total")).sort("date")
 rp_daily = rp_full.group_by("date").agg(pl.len().alias("rp_total")).sort("date")
 
 fig, ax = plt.subplots(figsize=(14, 5))
 ax.plot(
-    nw_daily["pub_date"].to_list(),
+    nw_daily["date"].to_list(),
     nw_daily["nw_total"].to_list(),
     color="tab:orange",
     alpha=0.7,
@@ -232,13 +238,60 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
+# ### Daily RavenPack Match Rate
+#
+# For each day, what fraction of RavenPack headlines were matched
+# by at least one scraped source (newswire or GDELT)?
+
+# %%
+# Load GDELT crosswalk and combine with newswire crosswalk
+gd_cw = pl.read_parquet(DATA_DIR / "gdelt_ravenpack_crosswalk.parquet")
+
+# Union of matched RP story IDs from both crosswalks, by date
+combined_matched = pl.concat([
+    cw.select("date", "rp_story_id"),
+    gd_cw.select("date", "rp_story_id"),
+]).unique(subset=["date", "rp_story_id"])
+
+combined_daily = (
+    combined_matched
+    .group_by("date")
+    .agg(pl.col("rp_story_id").n_unique().alias("matched"))
+    .sort("date")
+)
+
+match_rate_daily = (
+    rp_daily.join(combined_daily, on="date", how="left")
+    .with_columns(pl.col("matched").fill_null(0))
+    .with_columns((pl.col("matched") / pl.col("rp_total") * 100).alias("match_pct"))
+    .sort("date")
+)
+
+fig, ax = plt.subplots(figsize=(14, 4))
+ax.plot(
+    match_rate_daily["date"].to_list(),
+    match_rate_daily["match_pct"].to_list(),
+    color="tab:blue",
+    linewidth=0.7,
+    alpha=0.8,
+)
+ax.set_xlabel("Date")
+ax.set_ylabel("% of RP Headlines Matched")
+ax.set_title(
+    "Daily RavenPack Match Rate (newswire + GDELT combined)", fontweight="bold"
+)
+ax.set_ylim(0, None)
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
 # ### Data gap check
 #
 # Flag months with zero or very few headlines in either source.
 
 # %%
-date_min = min(nw_full["pub_date"].min(), rp_full["date"].min(), cw["date"].min())
-date_max = max(nw_full["pub_date"].max(), rp_full["date"].max(), cw["date"].max())
+date_min = min(nw_full["date"].min(), rp_full["date"].min(), cw["date"].min())
+date_max = max(nw_full["date"].max(), rp_full["date"].max(), cw["date"].max())
 
 all_months = pl.date_range(
     date_min.replace(day=1),
@@ -248,9 +301,9 @@ all_months = pl.date_range(
 ).alias("month")
 
 nw_monthly = (
-    nw_full.with_columns(pl.col("pub_date").dt.truncate("1mo").alias("month"))
+    nw_full.with_columns(pl.col("date").dt.truncate("1mo").alias("month"))
     .group_by("month")
-    .agg(pl.len().alias("nw_count"), pl.col("pub_date").n_unique().alias("nw_days"))
+    .agg(pl.len().alias("nw_count"), pl.col("date").n_unique().alias("nw_days"))
     .sort("month")
 )
 
