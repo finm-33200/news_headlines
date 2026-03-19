@@ -13,25 +13,94 @@
 # ---
 
 # %% [markdown]
-# # Data Sources Overview
+# # Data Sources & Strategy
 #
-# Quick look at each raw dataset pulled by the pipeline.
-# Five sources are currently collected or derived:
+# ## Why This Pipeline Exists
 #
-# 1. **RavenPack** Dow Jones Press Release headlines (via WRDS)
-# 2. **S&P 500 Constituents** historical membership (via WRDS/CRSP)
-# 3. **GDELT** S&P 500–filtered headlines (via BigQuery)
-# 4. **Free Newswires** S&P 500–filtered headlines (PR Newswire, Business Wire, GlobeNewswire)
-# 5. **Newswire–RavenPack Crosswalk** fuzzy-matched headline bridge between free newswires and RavenPack
+# **RavenPack** is the gold standard for firm-level financial news data:
+# every headline is pre-tagged with entity identifiers, relevance scores,
+# sentiment, and topic classifications. But its **terms of use prohibit
+# uploading headline text to LLMs** like ChatGPT for NLP analysis.
+#
+# **The workaround:** source headlines independently from free sources,
+# then **fuzzy-match** them to RavenPack to inherit its entity metadata.
+# Only the independently-sourced headlines get uploaded to LLMs —
+# RavenPack's text stays local, but its metadata travels via the
+# crosswalk.
+#
+# **Three headline sources in this pipeline:**
+#
+# 1. **RavenPack** — the metadata reference. High-quality entity tags and
+#    sentiment, but headlines cannot be uploaded to LLMs.
+# 2. **GDELT** — free, massive, but noisy. Covers the open web, not wire
+#    services. We will explore GDELT in more depth in a separate project.
+# 3. **Scraped newswires** (PR Newswire, Business Wire, GlobeNewswire) —
+#    the **primary headline source**. These are the same wire services
+#    RavenPack draws from, so fuzzy-match rates are high.
+#
+# The **newswire–RavenPack crosswalk** is the key pipeline output: it
+# links each free newswire headline to its best RavenPack match,
+# transferring entity IDs and sentiment without violating terms of use.
 
 # %%
+import re
 from pathlib import Path
 
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import polars as pl
-
 from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
+
+# %% [markdown]
+# ---
+# ## Key Result: RavenPack Headline Coverage
+
+# %%
+_cw = pl.read_parquet(DATA_DIR / "newswire_ravenpack_crosswalk.parquet")
+
+from pull_free_newswires import load_newswire_headlines as _load_nw
+
+_nw_total_urls = (
+    _load_nw()
+    .with_columns(pl.col("date").cast(pl.Date))
+    .filter(
+        (pl.col("date") >= _cw["date"].min()) & (pl.col("date") <= _cw["date"].max())
+    )
+    .select(pl.col("source_url").n_unique())
+    .collect()
+    .item()
+)
+_nw_matched_urls = _cw["nw_source_url"].n_unique()
+_nw_match_rate = _nw_matched_urls / _nw_total_urls * 100
+
+_rp_full = (
+    pl.scan_parquet(DATA_DIR / "ravenpack_djpr.parquet")
+    .with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
+    .filter(
+        (pl.col("date") >= _cw["date"].min()) & (pl.col("date") <= _cw["date"].max())
+    )
+    .select("rp_story_id")
+)
+_rp_total_stories = _rp_full.select(pl.col("rp_story_id").n_unique()).collect().item()
+_rp_matched_stories = _cw["rp_story_id"].n_unique()
+_rp_match_rate = _rp_matched_stories / _rp_total_stories * 100
+
+pl.DataFrame({
+    "metric": [
+        "RP headlines matched",
+        "NW headlines matched",
+        "Crosswalk pairs",
+        "Date range",
+    ],
+    "value": [
+        f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
+        f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
+        f"{len(_cw):,}",
+        f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
+    ],
+})
 
 # %% [markdown]
 # ---
@@ -42,6 +111,11 @@ DATA_DIR = Path(config("DATA_DIR"))
 # One row per news article / entity event from the RavenPack Dow Jones Press
 # Release feed. Filtered for US companies (`country_code='US'`),
 # high relevance ($\geq 90$), and single-firm stories only.
+#
+# RavenPack's strengths: curated entity matching, sentiment scores, and
+# topic classification. Its content is **~95% wire services** (Dow Jones,
+# PR Newswire, Business Wire, GlobeNewswire). The limitation: headline
+# text cannot be uploaded to LLMs under RavenPack's terms of use.
 #
 # **Key columns:**
 #
@@ -72,30 +146,6 @@ print(f"Column names: {cols}")
 rp.head(5).collect()
 
 # %% [markdown]
-# ### Full headline examples by news type
-
-# %%
-for row in (
-    rp.group_by("news_type")
-    .agg(pl.len().alias("n"))
-    .sort("n", descending=True)
-    .head(6)
-    .collect()
-    .iter_rows(named=True)
-):
-    sample = (
-        rp.filter(pl.col("news_type") == row["news_type"])
-        .select("headline")
-        .head(3)
-        .collect()["headline"]
-        .to_list()
-    )
-    print(f"── {row['news_type']} ({row['n']:,} articles) ──")
-    for h in sample:
-        print(f"  • {h}")
-    print()
-
-# %% [markdown]
 # ### Date range
 
 # %%
@@ -105,25 +155,9 @@ rp.select(
 ).collect()
 
 # %% [markdown]
-# ### Summary statistics — sentiment & relevance
-
-# %%
-rp.select(
-    pl.col("event_sentiment_score").mean().alias("mean_sentiment"),
-    pl.col("event_sentiment_score").std().alias("std_sentiment"),
-    pl.col("event_sentiment_score").median().alias("median_sentiment"),
-    pl.col("css").mean().alias("mean_css"),
-    pl.col("css").std().alias("std_css"),
-    pl.col("relevance").mean().alias("mean_relevance"),
-).collect()
-
-# %% [markdown]
 # ### Articles per month
 
 # %%
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
-
 rp_monthly = (
     rp.with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
     .group_by(pl.col("date").dt.truncate("1mo"))
@@ -148,49 +182,6 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# ### Headline-text duplicates
-#
-# Each row is unique by `(rp_story_id, rp_entity_id)`, but the same
-# headline string can appear on multiple story IDs (re-transmissions,
-# corrections, etc.).  How prevalent is this?
-
-# %%
-n_total = rp.select(pl.len()).collect().item()
-n_unique_story = rp.select(pl.col("rp_story_id").n_unique()).collect().item()
-n_unique_headline = rp.select(pl.col("headline").n_unique()).collect().item()
-n_unique_headline_date = (
-    rp.with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
-    .select(pl.struct("headline", "date").n_unique())
-    .collect()
-    .item()
-)
-
-print(f"Total rows:                    {n_total:>12,}")
-print(f"Unique rp_story_id:            {n_unique_story:>12,}")
-print(f"Unique headline texts:         {n_unique_headline:>12,}")
-print(f"Unique (headline, date) pairs: {n_unique_headline_date:>12,}")
-
-# %% [markdown]
-# ### Examples: same headline, different story IDs
-
-# %%
-rp_collected = rp.collect()
-dup_headlines = (
-    rp_collected.group_by("headline")
-    .agg(
-        pl.col("rp_story_id").n_unique().alias("n_stories"),
-        pl.len().alias("n_rows"),
-    )
-    .filter(pl.col("n_stories") > 1)
-    .sort("n_stories", descending=True)
-)
-print(f"Headlines appearing under multiple story IDs: {len(dup_headlines):,}")
-print()
-for row in dup_headlines.head(5).iter_rows(named=True):
-    print(f"  \"{row['headline']}\"")
-    print(f"    → {row['n_stories']} distinct story IDs, {row['n_rows']} total rows")
-
-# %% [markdown]
 # ---
 # ## 2. S&P 500 Constituents — `sp500_constituents.parquet`
 #
@@ -199,8 +190,7 @@ for row in dup_headlines.head(5).iter_rows(named=True):
 # Historical membership list of the S&P 500 index from CRSP
 # (`crsp_m_indexes.dsp500list_v2`). Each row is one membership spell
 # for a single PERMNO — i.e. the period during which a stock was part
-# of the index. Used here as an entity-information lookup (company
-# identifiers and index membership dates).
+# of the index.
 #
 # **Key columns:**
 #
@@ -244,23 +234,6 @@ n_unique = sp.select(pl.col("permno").n_unique()).collect().item()
 print(f"Distinct PERMNOs that have ever been in the S&P 500: {n_unique:,}")
 
 # %% [markdown]
-# ### Number of constituents on a sample date
-
-# %%
-import datetime
-
-sample_date = datetime.date(2023, 6, 30)
-n_on_date = (
-    sp.filter(
-        (pl.col("mbrstartdt") <= sample_date) & (pl.col("mbrenddt") > sample_date)
-    )
-    .select(pl.len())
-    .collect()
-    .item()
-)
-print(f"Constituents on {sample_date}: {n_on_date}")
-
-# %% [markdown]
 # ---
 # ## 3. GDELT S&P 500 — `gdelt_sp500_headlines/`
 #
@@ -268,8 +241,14 @@ print(f"Constituents on {sample_date}: {n_on_date}")
 #
 # Page-title headlines extracted from GDELT's Global Knowledge Graph 2.0,
 # filtered server-side in BigQuery to articles mentioning S&P 500 companies.
-# Data is stored as a monthly data lake (`gdelt_sp500_headlines/YYYY-MM.parquet`).
-# Here we load the sample month (January 2025).
+# Stored as a Hive-partitioned data lake (`year=YYYY/month=MM/data.parquet`).
+#
+# GDELT is **free and massive** (~400k articles/day), but its content comes
+# from the **open web** — blogs, aggregators, regional news — not the wire
+# services that dominate RavenPack. This means fuzzy-match overlap with
+# RavenPack is low (~7%). The false-positive problem and filtering quality
+# are explored in notebook 02. We will use GDELT in more depth in a
+# separate project.
 #
 # **Key columns:**
 #
@@ -303,31 +282,6 @@ print(f"Column names: {cols_gd}")
 gd.head(5).collect()
 
 # %% [markdown]
-# ### Full headline examples by source
-
-# %%
-top_sources = (
-    gd.group_by("source_name")
-    .agg(pl.len().alias("n"))
-    .sort("n", descending=True)
-    .head(5)
-    .collect()["source_name"]
-    .to_list()
-)
-for src in top_sources:
-    sample = (
-        gd.filter(pl.col("source_name") == src)
-        .select("headline")
-        .head(3)
-        .collect()["headline"]
-        .to_list()
-    )
-    print(f"── {src} ──")
-    for h in sample:
-        print(f"  • {h}")
-    print()
-
-# %% [markdown]
 # ### Date range
 
 # %%
@@ -337,35 +291,10 @@ gd.select(
 ).collect()
 
 # %% [markdown]
-# ### Summary statistics
-
-# %%
-gd_collected = gd.collect()
-headline_lengths = gd_collected.select(
-    pl.col("headline").str.len_chars().alias("headline_len")
-)
-print(f"Unique sources: {gd_collected['source_name'].n_unique():,}")
-print(
-    f"Headline length — mean: {headline_lengths['headline_len'].mean():.0f},  "
-    f"median: {headline_lengths['headline_len'].median():.0f},  "
-    f"max: {headline_lengths['headline_len'].max():,}"
-)
-
-# %% [markdown]
-# ### Top 15 sources
-
-# %%
-(
-    gd_collected.group_by("source_name")
-    .agg(pl.len().alias("n"))
-    .sort("n", descending=True)
-    .head(15)
-)
-
-# %% [markdown]
 # ### Headlines per day
 
 # %%
+gd_collected = gd.collect()
 gd_daily = (
     gd_collected.with_columns(pl.col("gkg_date").cast(pl.Date).alias("date"))
     .group_by("date")
@@ -388,16 +317,19 @@ plt.show()
 
 # %% [markdown]
 # ---
-# ## 4. Free Newswires — `newswire_sp500_headlines/`
+# ## 4. Free Newswires — `newswire_headlines/`
 #
 # Source script: `pull_free_newswires.py`
 #
 # Press release headlines scraped from PR Newswire via sitemap crawling,
 # then filtered locally to S&P 500 companies using normalized company
-# name substring matching. Data is stored as a Hive-partitioned data lake
-# (`newswire_sp500_headlines/year=YYYY/month=MM/data.parquet`).
-# Complements GDELT by covering the same licensed wire services that
-# RavenPack draws from.
+# name substring matching.
+#
+# These are the **same wire services that RavenPack draws from**, scraped
+# directly from their public-facing websites. This makes scraped newswires
+# the **primary headline source** for matching to RavenPack — because
+# the underlying press releases are identical, fuzzy-match rates are much
+# higher than with GDELT.
 #
 # **Key columns:**
 #
@@ -412,8 +344,6 @@ plt.show()
 # | `ticker` | Stock ticker symbol |
 
 # %%
-import re
-
 from pull_free_newswires import load_newswire_headlines
 from pull_sp500_constituents import load_sp500_names_lookup, normalize_company_name
 
@@ -471,28 +401,6 @@ for h in nw.select("headline").head(8).collect()["headline"].to_list():
     print(f"  • {h}")
 
 # %% [markdown]
-# ### Headlines by wire service
-
-# %%
-nw_collected = nw.collect()
-(
-    nw_collected.group_by("source_name")
-    .agg(pl.len().alias("n"))
-    .sort("n", descending=True)
-)
-
-# %% [markdown]
-# ### Top matched companies
-
-# %%
-(
-    nw_collected.group_by("matched_company")
-    .agg(pl.len().alias("n"))
-    .sort("n", descending=True)
-    .head(15)
-)
-
-# %% [markdown]
 # ---
 # ## 5. Newswire–RavenPack Crosswalk — `newswire_ravenpack_crosswalk.parquet`
 #
@@ -501,8 +409,11 @@ nw_collected = nw.collect()
 # Fuzzy-matched bridge between free newswire headlines and RavenPack DJ Press
 # Release headlines. Each row is the single best RavenPack match for a given
 # newswire headline on the same calendar date, kept only when the
-# `token_sort_ratio` score is ≥ 80. The crosswalk enables enriching free
-# newswire data with RavenPack's entity identifiers and sentiment scores.
+# `token_sort_ratio` score is $\geq 80$.
+#
+# **This is the key pipeline output.** It enables enriching free newswire data
+# with RavenPack's entity identifiers and sentiment scores, without uploading
+# RavenPack's headline text to any external service.
 #
 # **Key columns:**
 #
@@ -531,17 +442,6 @@ print(f"Column names: {cols_cw}")
 
 # %%
 cw.head(5).collect()
-
-# %% [markdown]
-# ### Full headline pairs (newswire → RavenPack)
-
-# %%
-pairs = cw.select("nw_headline", "rp_headline", "fuzzy_score").head(6).collect()
-for row in pairs.iter_rows(named=True):
-    print(f"  NW:  {row['nw_headline']}")
-    print(f"  RP:  {row['rp_headline']}")
-    print(f"  score: {row['fuzzy_score']}")
-    print()
 
 # %% [markdown]
 # ### Date range
@@ -573,30 +473,56 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# ### Matched headlines per month
+# ---
+# ## Why Scraped Newswires Beat GDELT for Matching
+#
+# RavenPack's content is **~95% wire services** — Dow Jones Newswires,
+# PR Newswire, Business Wire, and GlobeNewswire. These licensed feeds
+# publish corporate earnings, SEC filings, and press releases.
+#
+# GDELT crawls the **open web** — Yahoo Finance, aggregator sites,
+# regional news, blogs. Only **~1–2%** of GDELT's S&P 500 headlines
+# come from wire services. When we fuzzy-match GDELT against RavenPack,
+# only about **7%** of headlines overlap — they draw from fundamentally
+# different source ecosystems.
+#
+# By contrast, scraping wire services directly (PR Newswire, Business
+# Wire, GlobeNewswire) gives us the **same underlying press releases**
+# that RavenPack processes. The fuzzy-match rates are much higher because
+# we are literally matching the same content from the same sources.
+#
+# This is why scraped newswires — not GDELT — are the primary headline
+# source for the crosswalk.
+
+# %% [markdown]
+# ---
+# ## Source Comparison
+#
+# | | RavenPack | GDELT | Scraped Newswires |
+# |---|---|---|---|
+# | **Cost** | Commercial | Free (BQ scan costs) | Free |
+# | **Entity tagging** | Curated, high quality | Raw NLP, noisy | None (via crosswalk) |
+# | **Primary sources** | Licensed wire services (~95%) | Open web (~98%) | Wire services (same as RP) |
+# | **RP match rate** | N/A | ~7% (different ecosystems) | Much higher (same sources) |
+# | **ChatGPT upload?** | No (terms of use) | Yes | Yes |
+# | **Role in pipeline** | Metadata reference | Supplementary (separate project) | Primary headline source |
+
+# %% [markdown]
+# ---
+# ## Bottom Line
 
 # %%
-cw_monthly = (
-    cw_collected.with_columns(pl.col("date").dt.truncate("1mo").alias("month"))
-    .group_by("month")
-    .agg(pl.len().alias("n_matches"))
-    .sort("month")
-)
-
-fig, ax = plt.subplots(figsize=(10, 3))
-ax.bar(
-    cw_monthly["month"].to_list(),
-    cw_monthly["n_matches"].to_list(),
-    width=25,
-    color="mediumseagreen",
-    alpha=0.8,
-)
-ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
-ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
-fig.autofmt_xdate(rotation=45)
-ax.set_ylabel("Matches")
-ax.set_title("Newswire–RavenPack crosswalk — matched headlines per month")
-fig.tight_layout()
-plt.show()
-
-# %%
+pl.DataFrame({
+    "metric": [
+        "RP headlines matched",
+        "NW headlines matched",
+        "Crosswalk pairs",
+        "Date range",
+    ],
+    "value": [
+        f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
+        f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
+        f"{len(_cw):,}",
+        f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
+    ],
+})
