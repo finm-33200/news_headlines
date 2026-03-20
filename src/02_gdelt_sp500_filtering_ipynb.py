@@ -462,8 +462,13 @@ plt.show()
 #
 # **GDELT and RavenPack draw from different source ecosystems.** GDELT
 # covers the open web (~98%), while RavenPack is ~95% wire services.
-# Only ~7% of headlines overlap. This is why scraped newswires — not
-# GDELT — are the primary source for matching to RavenPack.
+# Only ~7% of GDELT headlines match RavenPack on a per-headline basis.
+# However, GDELT's enormous daily volume (hundreds of thousands of
+# articles) means it actually covers a **larger fraction of the
+# RavenPack universe** than scraped newswires alone. Newswire headlines
+# match at a higher per-headline rate but have smaller total volume.
+# Both sources are combined in the final crosswalk for maximum coverage
+# (see notebook 03 for the per-source breakdown).
 #
 # **The full data lake** shows consistent coverage from 2015 to present,
 # with hundreds of distinct S&P 500 companies matched per year.
