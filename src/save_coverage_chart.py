@@ -6,6 +6,7 @@ headlines are matched by scraped sources each day.
 
 from pathlib import Path
 
+import pandas as pd
 import plotly.graph_objects as go
 import polars as pl
 from pull_free_newswires import load_newswire_headlines
@@ -57,17 +58,23 @@ def main():
         .sort("date")
     )
 
+    MA_WINDOW = 5
+
+    # Apply 5-day moving average
+    match_rate_pd = match_rate.to_pandas().set_index("date").sort_index()
+    match_rate_pd["match_pct_ma"] = match_rate_pd["match_pct"].rolling(MA_WINDOW).mean()
+
     # Build Plotly chart
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=match_rate["date"].to_list(),
-        y=match_rate["match_pct"].to_list(),
+        x=match_rate_pd.index.tolist(),
+        y=match_rate_pd["match_pct_ma"].tolist(),
         mode="lines",
         line=dict(color="steelblue", width=1),
         name="Match rate",
     ))
     fig.update_layout(
-        title="Daily RavenPack Match Rate (newswire + GDELT combined)",
+        title=f"RavenPack Match Rate ({MA_WINDOW}-day MA, newswire + GDELT combined)",
         xaxis_title="Date",
         yaxis_title="% of RP Headlines Matched",
         yaxis=dict(rangemode="tozero"),
