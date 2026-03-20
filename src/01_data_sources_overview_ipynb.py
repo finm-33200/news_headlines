@@ -33,14 +33,17 @@
 # 1. **RavenPack** — the metadata reference. High-quality entity tags and
 #    sentiment, but headlines cannot be uploaded to LLMs.
 # 2. **GDELT** — free, massive, but noisy. Covers the open web, not wire
-#    services. We will explore GDELT in more depth in a separate project.
+#    services. Only ~7% of its headlines match RavenPack per-headline,
+#    but its enormous volume makes it the **largest contributor to overall
+#    RavenPack coverage**.
 # 3. **Scraped newswires** (PR Newswire, Business Wire, GlobeNewswire) —
-#    the **primary headline source**. These are the same wire services
-#    RavenPack draws from, so fuzzy-match rates are high.
+#    higher per-headline match rates (same wire services RavenPack draws
+#    from), but smaller total volume limits their coverage contribution.
 #
-# The **newswire–RavenPack crosswalk** is the key pipeline output: it
-# links each free newswire headline to its best RavenPack match,
-# transferring entity IDs and sentiment without violating terms of use.
+# Both GDELT and newswire crosswalks are combined to maximize RavenPack
+# coverage. The pipeline links each free headline to its best RavenPack
+# match, transferring entity IDs and sentiment without violating terms
+# of use.
 
 # %%
 import re
@@ -474,25 +477,24 @@ plt.show()
 
 # %% [markdown]
 # ---
-# ## Why Scraped Newswires Beat GDELT for Matching
+# ## GDELT vs Scraped Newswires: Different Strengths
 #
 # RavenPack's content is **~95% wire services** — Dow Jones Newswires,
-# PR Newswire, Business Wire, and GlobeNewswire. These licensed feeds
-# publish corporate earnings, SEC filings, and press releases.
+# PR Newswire, Business Wire, and GlobeNewswire. Scraping these wire
+# services directly gives us the **same underlying press releases** that
+# RavenPack processes, so the **per-headline match rate is high**.
 #
 # GDELT crawls the **open web** — Yahoo Finance, aggregator sites,
-# regional news, blogs. Only **~1–2%** of GDELT's S&P 500 headlines
-# come from wire services. When we fuzzy-match GDELT against RavenPack,
-# only about **7%** of headlines overlap — they draw from fundamentally
-# different source ecosystems.
+# regional news, blogs. Only **~7%** of GDELT's S&P 500 headlines match
+# RavenPack because they draw from fundamentally different source
+# ecosystems. However, GDELT's **sheer volume** (hundreds of thousands
+# of articles per day) compensates: despite the low per-headline match
+# rate, GDELT actually covers a **larger fraction of the RavenPack
+# universe** than newswire alone.
 #
-# By contrast, scraping wire services directly (PR Newswire, Business
-# Wire, GlobeNewswire) gives us the **same underlying press releases**
-# that RavenPack processes. The fuzzy-match rates are much higher because
-# we are literally matching the same content from the same sources.
-#
-# This is why scraped newswires — not GDELT — are the primary headline
-# source for the crosswalk.
+# In short: **newswire matches are more precise; GDELT matches are more
+# numerous.** Both sources are needed for maximum RavenPack coverage.
+# See notebook 03 (Crosswalk Quality) for the per-source breakdown chart.
 
 # %% [markdown]
 # ---
@@ -503,9 +505,10 @@ plt.show()
 # | **Cost** | Commercial | Free (BQ scan costs) | Free |
 # | **Entity tagging** | Curated, high quality | Raw NLP, noisy | None (via crosswalk) |
 # | **Primary sources** | Licensed wire services (~95%) | Open web (~98%) | Wire services (same as RP) |
-# | **RP match rate** | N/A | ~7% (different ecosystems) | Much higher (same sources) |
+# | **Per-headline RP match rate** | N/A | ~7% (different ecosystems) | Much higher (same sources) |
+# | **RP coverage contribution** | N/A | Larger (volume compensates) | Smaller (fewer total headlines) |
 # | **ChatGPT upload?** | No (terms of use) | Yes | Yes |
-# | **Role in pipeline** | Metadata reference | Supplementary (separate project) | Primary headline source |
+# | **Role in pipeline** | Metadata reference | Largest coverage contributor | Higher-precision matches |
 
 # %% [markdown]
 # ---
