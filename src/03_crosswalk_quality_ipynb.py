@@ -15,14 +15,13 @@
 # %% [markdown]
 # # Crosswalk Quality
 #
-# The pipeline's key output is the **newswire–RavenPack crosswalk**,
-# built by `create_newswire_ravenpack_crosswalk.py`. For each calendar
-# date, it fuzzy-matches free newswire headlines against RavenPack
-# headlines using `token_sort_ratio` and keeps the best match when the
-# score is $\geq 80$.
+# The pipeline builds two crosswalks — **newswire–RavenPack** and
+# **GDELT–RavenPack** — by fuzzy-matching free headlines against
+# RavenPack using `token_sort_ratio` (threshold $\geq 80$).
 #
-# This notebook evaluates the production crosswalk: how many headlines
-# matched, at what quality, and whether there are coverage gaps.
+# This notebook evaluates both crosswalks: how many headlines matched,
+# at what quality, which source contributes more to RavenPack coverage,
+# and whether there are coverage gaps.
 
 # %%
 import datetime
@@ -30,9 +29,12 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import polars as pl
 from pull_free_newswires import load_newswire_headlines
 from settings import config
+
+MA_WINDOW = 30
 
 DATA_DIR = Path(config("DATA_DIR"))
 
@@ -203,26 +205,30 @@ cw_daily = cw.group_by("date").agg(pl.len().alias("matched")).sort("date")
 nw_daily = nw_full.group_by("date").agg(pl.len().alias("nw_total")).sort("date")
 rp_daily = rp_full.group_by("date").agg(pl.len().alias("rp_total")).sort("date")
 
+nw_daily_pd = nw_daily.to_pandas().set_index("date").sort_index()
+rp_daily_pd = rp_daily.to_pandas().set_index("date").sort_index()
+cw_daily_pd = cw_daily.to_pandas().set_index("date").sort_index()
+
 fig, ax = plt.subplots(figsize=(14, 5))
 ax.plot(
-    nw_daily["date"].to_list(),
-    nw_daily["nw_total"].to_list(),
+    nw_daily_pd.index,
+    nw_daily_pd["nw_total"].rolling(MA_WINDOW).mean(),
     color="tab:orange",
     alpha=0.7,
     linewidth=0.8,
     label="Newswire total",
 )
 ax.plot(
-    rp_daily["date"].to_list(),
-    rp_daily["rp_total"].to_list(),
+    rp_daily_pd.index,
+    rp_daily_pd["rp_total"].rolling(MA_WINDOW).mean(),
     color="tab:green",
     alpha=0.7,
     linewidth=0.8,
     label="RavenPack total",
 )
 ax.plot(
-    cw_daily["date"].to_list(),
-    cw_daily["matched"].to_list(),
+    cw_daily_pd.index,
+    cw_daily_pd["matched"].rolling(MA_WINDOW).mean(),
     color="tab:blue",
     alpha=0.9,
     linewidth=1.0,
@@ -231,7 +237,8 @@ ax.plot(
 ax.set_xlabel("Date")
 ax.set_ylabel("Articles per Day")
 ax.set_title(
-    "Daily Headline Counts: Newswire, RavenPack, and Matched", fontweight="bold"
+    f"Headline Counts ({MA_WINDOW}-day MA): Newswire, RavenPack, and Matched",
+    fontweight="bold",
 )
 ax.legend(fontsize=9)
 fig.tight_layout()
@@ -267,10 +274,12 @@ match_rate_daily = (
     .sort("date")
 )
 
+match_rate_pd = match_rate_daily.to_pandas().set_index("date").sort_index()
+
 fig, ax = plt.subplots(figsize=(14, 4))
 ax.plot(
-    match_rate_daily["date"].to_list(),
-    match_rate_daily["match_pct"].to_list(),
+    match_rate_pd.index,
+    match_rate_pd["match_pct"].rolling(MA_WINDOW).mean(),
     color="tab:blue",
     linewidth=0.7,
     alpha=0.8,
@@ -278,11 +287,116 @@ ax.plot(
 ax.set_xlabel("Date")
 ax.set_ylabel("% of RP Headlines Matched")
 ax.set_title(
-    "Daily RavenPack Match Rate (newswire + GDELT combined)", fontweight="bold"
+    f"RavenPack Match Rate ({MA_WINDOW}-day MA, newswire + GDELT combined)",
+    fontweight="bold",
 )
 ax.set_ylim(0, None)
 fig.tight_layout()
 plt.show()
+
+# %% [markdown]
+# ### Coverage by Source: Newswire vs GDELT
+#
+# Which scraped source contributes more to RavenPack coverage?
+# This chart separates the combined match rate into individual
+# contributions from newswire and GDELT headlines.
+
+# %%
+# Per-source daily match counts
+nw_matched_daily = (
+    cw.select("date", "rp_story_id")
+    .unique(subset=["date", "rp_story_id"])
+    .group_by("date")
+    .agg(pl.col("rp_story_id").n_unique().alias("nw_matched"))
+    .sort("date")
+)
+
+gd_matched_daily = (
+    gd_cw.select("date", "rp_story_id")
+    .unique(subset=["date", "rp_story_id"])
+    .group_by("date")
+    .agg(pl.col("rp_story_id").n_unique().alias("gd_matched"))
+    .sort("date")
+)
+
+source_daily = (
+    rp_daily
+    .join(nw_matched_daily, on="date", how="left")
+    .join(gd_matched_daily, on="date", how="left")
+    .join(combined_daily, on="date", how="left")
+    .with_columns(
+        pl.col("nw_matched").fill_null(0),
+        pl.col("gd_matched").fill_null(0),
+        pl.col("matched").fill_null(0),
+    )
+    .with_columns(
+        (pl.col("nw_matched") / pl.col("rp_total") * 100).alias("nw_pct"),
+        (pl.col("gd_matched") / pl.col("rp_total") * 100).alias("gd_pct"),
+        (pl.col("matched") / pl.col("rp_total") * 100).alias("combined_pct"),
+    )
+    .sort("date")
+)
+
+source_daily_pd = source_daily.to_pandas().set_index("date").sort_index()
+
+fig, ax = plt.subplots(figsize=(14, 4))
+ax.plot(
+    source_daily_pd.index,
+    source_daily_pd["nw_pct"].rolling(MA_WINDOW).mean(),
+    color="tab:orange",
+    linewidth=0.7,
+    alpha=0.8,
+    label="Newswire only",
+)
+ax.plot(
+    source_daily_pd.index,
+    source_daily_pd["gd_pct"].rolling(MA_WINDOW).mean(),
+    color="tab:green",
+    linewidth=0.7,
+    alpha=0.8,
+    label="GDELT only",
+)
+ax.plot(
+    source_daily_pd.index,
+    source_daily_pd["combined_pct"].rolling(MA_WINDOW).mean(),
+    color="tab:blue",
+    linewidth=0.9,
+    alpha=0.9,
+    label="Combined",
+)
+ax.set_xlabel("Date")
+ax.set_ylabel("% of RP Headlines Matched")
+ax.set_title(
+    f"RavenPack Match Rate by Source ({MA_WINDOW}-day MA)", fontweight="bold"
+)
+ax.set_ylim(0, None)
+ax.legend(fontsize=9)
+fig.tight_layout()
+plt.show()
+
+# %%
+# Summary: average match rate contribution by source
+avg_nw = source_daily["nw_pct"].mean()
+avg_gd = source_daily["gd_pct"].mean()
+avg_combined = source_daily["combined_pct"].mean()
+print(f"Average daily match rate:")
+print(f"  Newswire only: {avg_nw:.1f}%")
+print(f"  GDELT only:    {avg_gd:.1f}%")
+print(f"  Combined:      {avg_combined:.1f}%")
+print(f"  GDELT uplift:  {avg_combined - avg_nw:.1f} pp over newswire alone")
+
+# %% [markdown]
+# **Conclusion:** GDELT is the **larger contributor** to RavenPack
+# headline coverage. Although only ~7% of GDELT's own headlines match
+# RavenPack (because GDELT draws from the open web, not wire services),
+# GDELT's sheer volume — hundreds of thousands of articles per day —
+# means it still covers more of the RavenPack universe than the scraped
+# newswires do. Newswire headlines have a *higher per-headline match
+# rate* (they come from the same wire services RavenPack uses), but
+# their smaller volume limits their overall RavenPack coverage.
+#
+# In short: **newswire matches are more precise; GDELT matches are more
+# numerous.** Both sources are needed for maximum coverage.
 
 # %% [markdown]
 # ### Data gap check
@@ -334,15 +448,24 @@ else:
 # %% [markdown]
 # ---
 # ## 6. Bottom Line
+#
+# GDELT is the **larger contributor** to RavenPack headline coverage
+# despite its low per-headline match rate (~7%), because its massive
+# daily volume compensates. Scraped newswires have a higher per-headline
+# match rate (same wire services as RavenPack) but smaller total volume.
+# **Both sources are needed for maximum coverage.**
 
 # %%
 scores_np_ = cw["fuzzy_score"].to_numpy()
 pl.DataFrame({
     "metric": [
-        "RP headlines matched",
+        "RP headlines matched (newswire crosswalk)",
         "NW headlines matched",
-        "Crosswalk pairs",
+        "Newswire crosswalk pairs",
         "Median fuzzy score",
+        "Avg. daily RP coverage — newswire only",
+        "Avg. daily RP coverage — GDELT only",
+        "Avg. daily RP coverage — combined",
         "Date range",
     ],
     "value": [
@@ -350,6 +473,9 @@ pl.DataFrame({
         f"{nw_match_rate:.1f}% ({nw_matched_urls:,} / {nw_total_urls:,})",
         f"{cw_rows:,} across {cw_n_dates:,} dates",
         f"{np.median(scores_np_):.1f} (threshold: 80)",
+        f"{avg_nw:.1f}%",
+        f"{avg_gd:.1f}%",
+        f"{avg_combined:.1f}%",
         f"{cw_date_min} to {cw_date_max}",
     ],
 })
