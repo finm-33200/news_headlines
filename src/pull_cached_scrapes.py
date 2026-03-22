@@ -1,9 +1,9 @@
-"""Download pre-scraped GDELT and newswire headline data from Dropbox.
+"""Download pre-scraped GDELT and newswire headline data.
 
-The instructor maintains a Dropbox folder with the full archive of scraped
-headlines. This script downloads that archive as a ZIP and extracts it into
-DATA_DIR, giving students the same hive-partitioned parquet files that the
-long-running scraping pipeline would produce.
+The instructor maintains a ZIP archive of scraped headlines on Dropbox and
+Google Drive. This script tries Dropbox first; if that fails it falls back
+to Google Drive (via ``gdown``, then ``curl``). The downloaded ZIP is
+extracted into DATA_DIR and then deleted.
 
 Usage
 -----
@@ -18,6 +18,7 @@ Called by dodo.py when USE_CACHED_SCRAPES=1 (the default).
 
 import argparse
 import shutil
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -27,11 +28,17 @@ import requests
 
 from settings import config
 
-# Dropbox shared folder — dl=1 triggers a ZIP download of the entire folder.
-DROPBOX_FOLDER_URL = (
-    "https://www.dropbox.com/scl/fo/xrwngh9remblw2s4brv4w/"
-    "APqvc68oGenbeyB38CYrGvg?rlkey=qsc2xlfxjl2o4vuwjib3ayzob&dl=1"
+# ---------------------------------------------------------------------------
+# Download URLs
+# ---------------------------------------------------------------------------
+# Dropbox — dl=1 triggers a direct download.
+DROPBOX_ZIP_URL = (
+    "https://www.dropbox.com/scl/fi/kcq0pwfmj11c5v71otu1p/"
+    "_data.zip?rlkey=9td5ylyn9ev9x41xkw29dltf2&st=bw27hqre&dl=1"
 )
+
+# Google Drive file ID (used by gdown and curl fallback).
+GDRIVE_FILE_ID = "1l6WhhBDDFiOndEG2OHwE_wwYGl5Acdmh"
 
 # Directories we expect to find inside the ZIP (after removing any wrapper).
 EXPECTED_DIRS = [
@@ -63,10 +70,10 @@ def _print_status(data_dir: Path) -> None:
             print(f"  {name}/  — NOT FOUND")
 
 
-def _download_zip(dest: Path) -> None:
-    """Stream-download the Dropbox ZIP to *dest*."""
-    print(f"Downloading cached scrapes from Dropbox...")
-    resp = requests.get(DROPBOX_FOLDER_URL, stream=True, timeout=60)
+def _stream_download(url: str, dest: Path, label: str) -> None:
+    """Stream-download *url* to *dest* with progress reporting."""
+    print(f"Downloading cached scrapes from {label}...")
+    resp = requests.get(url, stream=True, timeout=120)
     resp.raise_for_status()
 
     total = int(resp.headers.get("content-length", 0))
@@ -84,6 +91,66 @@ def _download_zip(dest: Path) -> None:
     print()  # newline after progress
 
 
+def _download_from_dropbox(dest: Path) -> None:
+    """Download the ZIP from Dropbox."""
+    _stream_download(DROPBOX_ZIP_URL, dest, "Dropbox")
+
+
+def _download_from_gdrive(dest: Path) -> None:
+    """Download the ZIP from Google Drive (gdown → curl fallback)."""
+    # Try gdown first
+    try:
+        import gdown
+
+        print("Downloading cached scrapes from Google Drive (gdown)...")
+        gdown.download(id=GDRIVE_FILE_ID, output=str(dest), quiet=False)
+        if dest.exists() and dest.stat().st_size > 0:
+            return
+        raise RuntimeError("gdown produced an empty or missing file")
+    except Exception as exc:
+        print(f"  gdown failed: {exc}")
+
+    # Fallback: curl
+    curl = shutil.which("curl")
+    if curl is None:
+        raise RuntimeError(
+            "Cannot download from Google Drive: gdown failed and curl is not "
+            "available on this system. Install gdown (`pip install gdown`) or "
+            "ensure curl is on your PATH."
+        )
+    print("Downloading cached scrapes from Google Drive (curl)...")
+    gdrive_url = (
+        f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
+    )
+    result = subprocess.run(
+        [curl, "-L", "-o", str(dest), gdrive_url],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if not dest.exists() or dest.stat().st_size == 0:
+        raise RuntimeError(f"curl download produced an empty file: {result.stderr}")
+
+
+def _download_zip(dest: Path) -> None:
+    """Try Dropbox, then fall back to Google Drive."""
+    try:
+        _download_from_dropbox(dest)
+        return
+    except Exception as exc:
+        print(f"\n  Dropbox download failed: {exc}")
+        print("  Trying Google Drive as fallback...\n")
+
+    try:
+        _download_from_gdrive(dest)
+        return
+    except Exception as exc:
+        raise RuntimeError(
+            "All download sources failed. Check your internet connection and "
+            "try again later."
+        ) from exc
+
+
 def _extract_zip(zip_path: Path, data_dir: Path) -> None:
     """Extract the ZIP into *data_dir*, handling Dropbox's wrapper directory."""
     print(f"Extracting to {data_dir} ...")
@@ -92,8 +159,12 @@ def _extract_zip(zip_path: Path, data_dir: Path) -> None:
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(tmpdir)
 
-        # Dropbox may wrap contents in a single top-level directory.
-        top_level = [p for p in tmpdir.iterdir() if not p.name.startswith(".")]
+        # The ZIP may wrap contents in a single top-level directory.
+        # Ignore macOS resource fork directories and hidden files.
+        top_level = [
+            p for p in tmpdir.iterdir()
+            if not p.name.startswith(".") and p.name != "__MACOSX"
+        ]
         if len(top_level) == 1 and top_level[0].is_dir():
             # Check if the expected dirs are inside the wrapper
             wrapper = top_level[0]
