@@ -197,50 +197,50 @@ def task_pull():
         }
 
 
-# def task_create_crosswalk():
-#     """Fuzzy-match crosswalks between scraped headlines and RavenPack"""
-#     # Newswire crosswalk
-#     nw_task_dep = (
-#         ["pull:cached_scrapes"] if USE_CACHED_SCRAPES else ["pull:newswire_sample"]
-#     )
-#     yield {
-#         "name": "newswire",
-#         "doc": "Fuzzy-match newswire headlines to RavenPack",
-#         "actions": [
-#             "python ./src/settings.py",
-#             "python ./src/create_newswire_ravenpack_crosswalk.py",
-#         ],
-#         "targets": [DATA_DIR / "newswire_ravenpack_crosswalk.parquet"],
-#         "file_dep": [
-#             "./src/settings.py",
-#             "./src/create_newswire_ravenpack_crosswalk.py",
-#             DATA_DIR / "ravenpack_djpr.parquet",
-#         ],
-#         "task_dep": nw_task_dep,
-#         "clean": [],
-#     }
+def task_create_crosswalk():
+    """Fuzzy-match crosswalks between scraped headlines and RavenPack"""
+    # Newswire crosswalk
+    nw_task_dep = (
+        ["pull:cached_scrapes"] if USE_CACHED_SCRAPES else ["pull:newswire_sample"]
+    )
+    yield {
+        "name": "newswire",
+        "doc": "Fuzzy-match newswire headlines to RavenPack",
+        "actions": [
+            "python ./src/settings.py",
+            "python ./src/create_newswire_ravenpack_crosswalk.py",
+        ],
+        "targets": [DATA_DIR / "newswire_ravenpack_crosswalk.parquet"],
+        "file_dep": [
+            "./src/settings.py",
+            "./src/create_newswire_ravenpack_crosswalk.py",
+            DATA_DIR / "ravenpack_djpr.parquet",
+        ],
+        "task_dep": nw_task_dep,
+        "clean": [],
+    }
 
-#     # GDELT crosswalk
-#     gdelt_task_dep = (
-#         ["pull:cached_scrapes"] if USE_CACHED_SCRAPES else ["pull:gdelt_sp500_sample"]
-#     )
-#     yield {
-#         "name": "gdelt",
-#         "doc": "Fuzzy-match GDELT S&P 500 headlines to RavenPack",
-#         "actions": [
-#             "python ./src/settings.py",
-#             "python ./src/create_gdelt_ravenpack_crosswalk.py",
-#         ],
-#         "targets": [DATA_DIR / "gdelt_ravenpack_crosswalk.parquet"],
-#         "file_dep": [
-#             "./src/settings.py",
-#             "./src/create_gdelt_ravenpack_crosswalk.py",
-#             "./src/create_newswire_ravenpack_crosswalk.py",  # imports normalize_headline
-#             DATA_DIR / "ravenpack_djpr.parquet",
-#         ],
-#         "task_dep": gdelt_task_dep,
-#         "clean": [],
-#     }
+    # GDELT crosswalk
+    gdelt_task_dep = (
+        ["pull:cached_scrapes"] if USE_CACHED_SCRAPES else ["pull:gdelt_sp500_sample"]
+    )
+    yield {
+        "name": "gdelt",
+        "doc": "Fuzzy-match GDELT S&P 500 headlines to RavenPack",
+        "actions": [
+            "python ./src/settings.py",
+            "python ./src/create_gdelt_ravenpack_crosswalk.py",
+        ],
+        "targets": [DATA_DIR / "gdelt_ravenpack_crosswalk.parquet"],
+        "file_dep": [
+            "./src/settings.py",
+            "./src/create_gdelt_ravenpack_crosswalk.py",
+            "./src/create_newswire_ravenpack_crosswalk.py",  # imports normalize_headline
+            DATA_DIR / "ravenpack_djpr.parquet",
+        ],
+        "task_dep": gdelt_task_dep,
+        "clean": [],
+    }
 
 
 def task_create_merged_dataset():
