@@ -10,6 +10,9 @@ Key filters (matching Chen, Kelly, and Xiu 2022):
 - country_code = 'US' (US only)
 - relevance >= 90 (high relevance)
 - Single-firm stories only (one entity per provider story)
+
+Each year is written as a separate row group via pyarrow.parquet.ParquetWriter
+so that only one year of data is in memory at a time (~200-400 MB peak).
 """
 
 import gc
@@ -18,8 +21,11 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 import wrds
+from psycopg2 import ProgrammingError
 
 from settings import config
 
@@ -30,7 +36,10 @@ RP_START_DATE = "2000-01-01"
 
 
 def pull_ravenpack(
-    start_date=RP_START_DATE, end_date=None, wrds_username=WRDS_USERNAME
+    start_date=RP_START_DATE,
+    end_date=None,
+    wrds_username=WRDS_USERNAME,
+    output_path=None,
 ):
     """
     Pull RavenPack DJ Press Release headlines from WRDS, year by year.
@@ -41,16 +50,21 @@ def pull_ravenpack(
     If end_date is None, pulls through the current date. Years whose
     tables do not exist on WRDS are skipped gracefully.
 
-    Returns a concatenated DataFrame across all years in the date range.
+    Writes each year as a row group to a single parquet file at output_path.
+    Returns the total number of rows written.
     """
     if end_date is None:
         end_date = date.today().strftime("%Y-%m-%d")
+    if output_path is None:
+        output_path = Path(DATA_DIR) / "ravenpack_djpr.parquet"
 
     start_year = int(start_date[:4])
     end_year = int(end_date[:4])
 
+    tmp_path = output_path.with_suffix(".parquet.tmp")
     db = wrds.Connection(wrds_username=wrds_username)
-    frames = []
+    writer = None
+    total_rows = 0
 
     try:
         for year in range(start_year, end_year + 1):
@@ -106,25 +120,42 @@ def pull_ravenpack(
 
             try:
                 df_year = db.raw_sql(query)
-            except Exception as e:
-                print(f"  {table}: skipping (table may not exist: {e})")
+            except ProgrammingError:
+                print(f"  {table}: skipping (table does not exist on WRDS)")
                 continue
-            print(f"  {table}: {len(df_year):,} rows")
-            frames.append(df_year)
+            except MemoryError:
+                raise
+            except Exception as e:
+                print(f"  {table}: skipping ({type(e).__name__}: {e})")
+                continue
+
+            table_pa = pa.Table.from_pandas(df_year, preserve_index=False)
+            del df_year
+            gc.collect()
+
+            if writer is None:
+                writer = pq.ParquetWriter(tmp_path, table_pa.schema)
+
+            writer.write_table(table_pa)
+            total_rows += table_pa.num_rows
+            print(f"  {table}: {table_pa.num_rows:,} rows")
+            del table_pa
+            gc.collect()
     finally:
         db.close()
         del db
+        if writer is not None:
+            writer.close()
         gc.collect()
 
-    df = pd.concat(frames, ignore_index=True)
-    print(f"Total RavenPack headlines: {len(df):,}")
-    return df
+    tmp_path.rename(output_path)
+    print(f"Total RavenPack headlines: {total_rows:,}")
+    return total_rows
 
 
 def load_ravenpack(data_dir=DATA_DIR):
     path = Path(data_dir) / "ravenpack_djpr.parquet"
-    df = pd.read_parquet(path)
-    return df
+    return pl.read_parquet(path)
 
 
 if __name__ == "__main__":
@@ -132,11 +163,8 @@ if __name__ == "__main__":
     if path.exists():
         print(f"Already exists: {path} — skipping pull.")
     else:
-        df = pull_ravenpack(start_date=RP_START_DATE)
-        df.to_parquet(path)
+        pull_ravenpack(start_date=RP_START_DATE, output_path=path)
         print(f"Saved to {path}")
-        del df
-        gc.collect()
     # Force-exit to avoid Windows access violation (0xC0000005) during
     # interpreter shutdown caused by native library cleanup (psycopg2/pyarrow).
     sys.stdout.flush()
