@@ -1,5 +1,9 @@
 # TODO: Backfill PR Newswire Coverage (2012-07 through 2019-12)
 
+> **See also**: [moredata_source_expansion_plan.md](moredata_source_expansion_plan.md)
+> for the broader source expansion audit (P0–P4 priority list). This backfill
+> is Priority P1 in that plan.
+
 ## Problem
 
 The coverage chart (`rp_match_rate_coverage.html`) shows a gap from mid-2012 through end-2019 where match rate drops to near zero. This is caused by missing PR Newswire sitemap data — the live URLs at `prnewswire.com` return 404 for those months.
