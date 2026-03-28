@@ -100,12 +100,21 @@ more than sufficient for this project.
 #### Full Newswire Pull
 
 With `USE_CACHED_SCRAPES=0`, the default `doit` pipeline pulls a single sample
-month of newswire headlines. To crawl the full history (2020 to present), run
-the script directly:
+month of newswire headlines. To crawl the full history, run the script directly:
 
 ```bash
 python ./src/pull_free_newswires.py --full
 ```
+
+**Sources crawled:**
+
+| Source | Method | Coverage |
+|--------|--------|----------|
+| PR Newswire | Gzipped monthly sitemaps + Wayback fallback | 2010–present |
+| GlobeNewswire | Plain monthly sitemaps (sitemaps.globenewswire.com) | Apr 2023–present |
+
+GlobeNewswire headlines are extracted directly from sitemap XML metadata
+(fast-path — no per-page HTTP), yielding ~10K articles/month.
 
 This is a long-running crawl (days/weeks depending on network speed). It is
 **resumable** — completed days are saved as daily Hive-partitioned parquets and
@@ -113,7 +122,7 @@ skipped on re-run. Safe to `Ctrl+C` and restart.
 
 Common options:
 ```bash
-# Start from a specific date instead of 2020-01-01
+# Start from a specific date instead of 2010-01-01
 python ./src/pull_free_newswires.py --full --start 2023-01-01
 
 # Pull a single specific month
@@ -121,6 +130,29 @@ python ./src/pull_free_newswires.py --month 2024-06
 
 # Check crawl progress
 python ./src/pull_free_newswires.py --status
+```
+
+#### PR Newswire Backfill (2012–2019)
+
+PR Newswire's live sitemaps return 404 for mid-2012 through end-2019. A
+standalone script discovers valid Wayback Machine timestamps for these months:
+
+```bash
+# Dry-run: see which months have Wayback archives
+python ./src/discover_wayback_timestamps.py --dry-run
+
+# Full discovery with local cache for resumability
+python ./src/discover_wayback_timestamps.py --cache-dir _data/wayback_cache
+
+# Discover a specific date range
+python ./src/discover_wayback_timestamps.py --start 2015-01 --end 2016-12
+```
+
+The script outputs a Python dict literal to paste into `_WAYBACK_TIMESTAMPS` in
+`pull_free_newswires.py`. After updating timestamps, re-run the backfill:
+
+```bash
+python ./src/pull_free_newswires.py --full --start 2012-07-01 --end 2020-01-01
 ```
 
 ### Formatting

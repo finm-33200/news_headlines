@@ -1,10 +1,18 @@
 """
-Pull free newswire headlines from PR Newswire.
+Pull free newswire headlines from PR Newswire and GlobeNewswire.
 
-Scrapes press releases from PR Newswire via sitemap crawling.
-Raw headlines are saved to a Hive-partitioned data lake:
+Scrapes press releases via sitemap crawling. Raw headlines are saved to a
+Hive-partitioned data lake:
 
     newswire_headlines/source={key}/year=YYYY/month=MM/day=DD/data.parquet
+
+Sources:
+  PR Newswire     — gzipped monthly sitemaps (2010–present, some gaps).
+                    Wayback Machine fallback for corrupted/missing months.
+  GlobeNewswire   — plain monthly sitemaps on sitemaps.globenewswire.com
+                    (Apr 2023–present, ~10K articles/month). Titles are
+                    embedded in the sitemap XML — fast-path extraction
+                    with no per-page HTTP.
 
 S&P 500 filtering is done downstream in analysis notebooks.
 
@@ -15,10 +23,8 @@ Two modes:
 Both modes write to the same output directory with the same daily
 partitioning. Completed days are skipped on re-run. Safe to Ctrl+C.
 
-Note: Business Wire and GlobeNewswire were previously attempted but
-removed. Business Wire's sitemap consistently times out, and
-GlobeNewswire's sitemap only contains ~2 days of recent articles,
-making historical crawls impossible.
+Note: Business Wire was previously attempted but removed — its sitemap
+consistently times out.
 
 """
 
@@ -331,7 +337,9 @@ class PRNewswireScraper:
             logger.info(f"{self.NAME}: recovered {month_str} from Wayback Machine")
             return xml_bytes
         except Exception as e:
-            logger.warning(f"{self.NAME}: Wayback decompress failed for {month_str}: {e}")
+            logger.warning(
+                f"{self.NAME}: Wayback decompress failed for {month_str}: {e}"
+            )
             return None
 
     def _parse_headline_from_soup(self, soup, url):
@@ -396,7 +404,115 @@ class PRNewswireScraper:
         return None
 
 
-ALL_SCRAPERS = [PRNewswireScraper()]
+class GlobeNewswireScraper:
+    """Scraper for GlobeNewswire (globenewswire.com).
+
+    GlobeNewswire hosts a comprehensive sitemap index on a separate subdomain:
+        https://sitemaps.globenewswire.com/news-en.xml     (sitemap index)
+        https://sitemaps.globenewswire.com/news/en/YYYY-MM.xml  (monthly)
+        https://sitemaps.globenewswire.com/news/en/latest.xml   (rolling recent)
+
+    Monthly sitemaps are plain XML (not gzipped) and include Google News
+    metadata: title, publication date, keywords, and stock tickers.
+    This means headlines can be extracted directly from the sitemap XML
+    without fetching individual article pages (fast-path).
+
+    Coverage: April 2023 to present (~10K articles/month).
+    """
+
+    NAME = "GlobeNewswire"
+    SOURCE_KEY = "globenewswire"
+    SITEMAP_INDEX_URL = "https://sitemaps.globenewswire.com/news-en.xml"
+
+    def date_from_url(self, url):
+        """Extract date from GlobeNewswire URL.
+
+        URL format: .../news-release/YYYY/MM/DD/{id}/0/en/{slug}.html
+        """
+        try:
+            idx = url.index("/news-release/")
+            parts = url[idx:].split("/")
+            # parts: ['', 'news-release', 'YYYY', 'MM', 'DD', ...]
+            if len(parts) >= 5:
+                return f"{parts[2]}-{parts[3]}-{parts[4]}"
+        except (ValueError, IndexError):
+            pass
+        return None
+
+    def _fetch_sitemap_xml(self, year, month):
+        """Fetch the monthly sitemap XML (plain, not gzipped).
+
+        Returns XML bytes, or None if the month is not available.
+        """
+        month_str = f"{year:04d}-{month:02d}"
+        url = f"https://sitemaps.globenewswire.com/news/en/{month_str}.xml"
+        logger.info(f"{self.NAME}: fetching {url}")
+        resp = _fetch(url, delay=SITEMAP_DELAY)
+        if resp is None:
+            logger.warning(f"{self.NAME}: no sitemap available for {month_str}")
+            return None
+        return resp.content
+
+    def _parse_headline_from_soup(self, soup, url):
+        """Parse headline from a GlobeNewswire article page (fallback path).
+
+        Rarely needed since GlobeNewswire sitemaps always include news:title.
+        """
+        headline = None
+        for selector in ["h1.article-headline", "h1.main-title", "h1"]:
+            tag = soup.select_one(selector)
+            if tag and tag.get_text(strip=True):
+                headline = tag.get_text(strip=True)
+                break
+        if not headline:
+            return None
+        pub_date = self.date_from_url(url)
+        if not pub_date:
+            for attr in [{"name": "date"}, {"property": "article:published_time"}]:
+                meta = soup.find("meta", attrs=attr)
+                if meta and meta.get("content"):
+                    pub_date = meta["content"][:10]
+                    break
+        return {"headline": headline, "source_url": url, "date": pub_date}
+
+    def sitemap_urls_for_month(self, year, month):
+        """Get press release URLs from monthly sitemap."""
+        month_str = f"{year:04d}-{month:02d}"
+        xml_bytes = self._fetch_sitemap_xml(year, month)
+        if xml_bytes is None:
+            logger.warning(f"{self.NAME}: no sitemap available for {month_str}")
+            return []
+        urls = _parse_sitemap_urls(
+            xml_bytes,
+            url_filter=lambda u: "/news-release/" in u.lower(),
+        )
+        logger.info(f"{self.NAME}: {len(urls)} URLs for {month_str}")
+        return urls
+
+    def sitemap_entries_for_month(self, year, month):
+        """Extract headlines directly from monthly sitemap metadata.
+
+        GlobeNewswire sitemaps always include news:title, so the fast-path
+        should always succeed. Returns None only if the sitemap is unavailable.
+        """
+        month_str = f"{year:04d}-{month:02d}"
+        xml_bytes = self._fetch_sitemap_xml(year, month)
+        if xml_bytes is None:
+            return None
+        entries = _parse_sitemap_news_entries(xml_bytes)
+        if entries:
+            logger.info(
+                f"{self.NAME}: {len(entries)} entries with sitemap metadata for {month_str}"
+            )
+            return entries
+        logger.info(
+            f"{self.NAME}: no <news:title> in sitemap for {month_str}; "
+            f"falling back to per-page fetches"
+        )
+        return None
+
+
+ALL_SCRAPERS = [PRNewswireScraper(), GlobeNewswireScraper()]
 
 
 # ---------------------------------------------------------------------------
@@ -622,9 +738,7 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
             headlines_by_day[int(e["date"][8:10])].append(e)
         headlines_saved = 0
         for day, day_headlines in sorted(headlines_by_day.items()):
-            _save_day_parquet(
-                day_headlines, output_dir, source_key, year, month, day
-            )
+            _save_day_parquet(day_headlines, output_dir, source_key, year, month, day)
             headlines_saved += len(day_headlines)
         _mark_month_complete(output_dir, source_key, year, month)
         logger.info(
