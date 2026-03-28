@@ -24,17 +24,14 @@ README_file_path = "./README.md"
 
 
 [notebooks.01_data_sources_overview]
-notebook_name = "Data Sources & Strategy"
 notebook_description = "Pipeline motivation, data source comparison, and summary statistics for each dataset."
 notebook_path = "_output/01_data_sources_overview_ipynb.ipynb"
 
 [notebooks.02_gdelt_sp500_filtering]
-notebook_name = "GDELT Filtering & Data Quality"
 notebook_description = "Filtering funnel, false positive analysis, and full data lake coverage for GDELT S&P 500 headlines."
 notebook_path = "_output/02_gdelt_sp500_filtering_ipynb.ipynb"
 
 [notebooks.03_crosswalk_quality]
-notebook_name = "Crosswalk Quality"
 notebook_description = "Match rates, score distribution, and coverage for the newswire-to-RavenPack headline crosswalk."
 notebook_path = "_output/03_crosswalk_quality_ipynb.ipynb"
 
