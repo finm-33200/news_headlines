@@ -24,6 +24,7 @@ Usage:
 
 import argparse
 import gzip
+import importlib.util
 import json
 import logging
 import sys
@@ -63,6 +64,19 @@ MONTH_ABBR = {
 # Default range: the known gap in PR Newswire on-disk data
 DEFAULT_START = "2012-07"
 DEFAULT_END = "2019-12"
+KNOWN_NO_ARCHIVE_MONTHS = {
+    "2012-07",
+    "2012-08",
+    "2012-09",
+    "2015-03",
+    "2015-04",
+    "2016-10",
+    "2018-02",
+    "2018-06",
+    "2019-02",
+    "2019-10",
+    "2019-11",
+}
 
 
 def _sitemap_gz_url(year, month):
@@ -200,6 +214,139 @@ def _generate_months(start, end):
             y += 1
 
 
+def _collapse_month_ranges(months):
+    """Collapse sorted YYYY-MM month strings into inclusive ranges."""
+    if not months:
+        return []
+
+    parsed = sorted((int(month[:4]), int(month[5:7])) for month in months)
+    ranges = []
+    start = prev = parsed[0]
+
+    for current in parsed[1:]:
+        expected = (prev[0] + 1, 1) if prev[1] == 12 else (prev[0], prev[1] + 1)
+        if current == expected:
+            prev = current
+            continue
+        ranges.append((start, prev))
+        start = prev = current
+    ranges.append((start, prev))
+
+    collapsed = []
+    for range_start, range_end in ranges:
+        start_str = f"{range_start[0]:04d}-{range_start[1]:02d}"
+        end_str = f"{range_end[0]:04d}-{range_end[1]:02d}"
+        collapsed.append(start_str if range_start == range_end else f"{start_str}..{end_str}")
+    return collapsed
+
+
+def _load_existing_wayback_timestamps():
+    """Load ``_WAYBACK_TIMESTAMPS`` from ``pull_free_newswires.py``."""
+    target = Path(__file__).with_name("pull_free_newswires.py")
+    spec = importlib.util.spec_from_file_location("pull_free_newswires", target)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not import {target}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, "_WAYBACK_TIMESTAMPS")
+
+
+def validate_existing_timestamps(
+    timestamps,
+    start=DEFAULT_START,
+    end=DEFAULT_END,
+    known_no_archive=KNOWN_NO_ARCHIVE_MONTHS,
+):
+    """Validate the current timestamp block for the expected PRN gap.
+
+    Performs a static, zero-network consistency check:
+    - timestamp keys in the target gap are well-formed and in range
+    - timestamp values are 14-digit Wayback timestamps
+    - every month in the gap is either populated or explicitly listed as
+      having no known Wayback archive
+    """
+    expected_months = {
+        f"{year:04d}-{month:02d}" for year, month in _generate_months(start, end)
+    }
+    in_range_keys = sorted(key for key in timestamps if key in expected_months)
+    missing = sorted(expected_months - set(in_range_keys) - set(known_no_archive))
+    covered_no_archive = sorted(set(in_range_keys) & set(known_no_archive))
+
+    malformed_keys = []
+    malformed_timestamps = []
+    for key in in_range_keys:
+        try:
+            year, month = int(key[:4]), int(key[5:7])
+        except ValueError:
+            malformed_keys.append(key)
+            continue
+        if len(key) != 7 or key[4] != "-" or month < 1 or month > 12 or year < 1900:
+            malformed_keys.append(key)
+
+        ts = timestamps[key]
+        if not (isinstance(ts, str) and len(ts) == 14 and ts.isdigit()):
+            malformed_timestamps.append((key, ts))
+
+    return {
+        "expected_months": len(expected_months),
+        "timestamps_in_range": len(in_range_keys),
+        "known_no_archive": len(known_no_archive),
+        "missing": missing,
+        "covered_no_archive": covered_no_archive,
+        "malformed_keys": malformed_keys,
+        "malformed_timestamps": malformed_timestamps,
+        "outside_range": sorted(key for key in timestamps if key not in expected_months),
+    }
+
+
+def _print_validation_summary(results, start, end):
+    """Print a human-readable validation summary."""
+    resolved = results["timestamps_in_range"] + results["known_no_archive"]
+    coverage_pct = (resolved / results["expected_months"] * 100) if results["expected_months"] else 0
+    print(
+        f"\n# Existing _WAYBACK_TIMESTAMPS validation for {start} through {end}\n"
+        f"# Gap months: {results['expected_months']}\n"
+        f"# Timestamped gap months: {results['timestamps_in_range']}\n"
+        f"# Explicit no-archive months: {results['known_no_archive']}\n"
+        f"# Accounted-for gap months: {resolved}/{results['expected_months']} "
+        f"({coverage_pct:.1f}%)"
+    )
+    if results["outside_range"]:
+        print(
+            "# Additional fallback months outside this gap retained in the dict: "
+            f"{', '.join(results['outside_range'])}"
+        )
+    if results["missing"]:
+        print(f"# Missing timestamp entries: {', '.join(results['missing'])}")
+        print(
+            "# Missing timestamp ranges: "
+            f"{', '.join(_collapse_month_ranges(results['missing']))}"
+        )
+    if results["covered_no_archive"]:
+        print(
+            "# Months listed as no-archive but still present in dict: "
+            f"{', '.join(results['covered_no_archive'])}"
+        )
+    print(
+        "# Explicit no-archive ranges: "
+        f"{', '.join(_collapse_month_ranges(KNOWN_NO_ARCHIVE_MONTHS))}"
+    )
+    if results["malformed_keys"]:
+        print(f"# Malformed month keys: {', '.join(results['malformed_keys'])}")
+    if results["malformed_timestamps"]:
+        pairs = ", ".join(f"{key}={value}" for key, value in results["malformed_timestamps"])
+        print(f"# Malformed Wayback timestamps: {pairs}")
+
+    ok = not (
+        results["missing"]
+        or results["covered_no_archive"]
+        or results["malformed_keys"]
+        or results["malformed_timestamps"]
+    )
+    print(f"# Result: {'OK' if ok else 'FAIL'}")
+    return ok
+
+
 def discover_timestamps(
     start=DEFAULT_START,
     end=DEFAULT_END,
@@ -309,6 +456,7 @@ if __name__ == "__main__":
             "  python src/discover_wayback_timestamps.py --start 2015-01 --end 2016-01\n"
             "  python src/discover_wayback_timestamps.py --cache-dir _data/wayback_cache\n"
             "  python src/discover_wayback_timestamps.py --dry-run\n"
+            "  python src/discover_wayback_timestamps.py --validate-existing\n"
         ),
     )
     parser.add_argument(
@@ -340,7 +488,58 @@ if __name__ == "__main__":
         default=3,
         help="Max snapshots to try per month before giving up (default: 3).",
     )
+    parser.add_argument(
+        "--validate-existing",
+        action="store_true",
+        help=(
+            "Validate the existing _WAYBACK_TIMESTAMPS block in "
+            "pull_free_newswires.py for the selected month range without "
+            "calling Wayback."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "With --validate-existing, emit the validation report as JSON "
+            "instead of the human-readable summary."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.validate_existing:
+        timestamps = _load_existing_wayback_timestamps()
+        results = validate_existing_timestamps(
+            timestamps,
+            start=args.start,
+            end=args.end,
+        )
+        if args.json:
+            resolved = results["timestamps_in_range"] + results["known_no_archive"]
+            payload = {
+                **results,
+                "start": args.start,
+                "end": args.end,
+                "resolved_months": resolved,
+                "coverage_pct": (
+                    round(resolved / results["expected_months"] * 100, 1)
+                    if results["expected_months"]
+                    else 0.0
+                ),
+                "missing_ranges": _collapse_month_ranges(results["missing"]),
+                "known_no_archive_ranges": _collapse_month_ranges(
+                    KNOWN_NO_ARCHIVE_MONTHS
+                ),
+                "ok": not (
+                    results["missing"]
+                    or results["covered_no_archive"]
+                    or results["malformed_keys"]
+                    or results["malformed_timestamps"]
+                ),
+            }
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            sys.exit(0 if payload["ok"] else 1)
+        sys.exit(0 if _print_validation_summary(results, args.start, args.end) else 1)
 
     timestamps = discover_timestamps(
         start=args.start,
