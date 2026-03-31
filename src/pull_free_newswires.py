@@ -1,5 +1,5 @@
 """
-Pull free newswire headlines from PR Newswire and GlobeNewswire.
+Pull free newswire headlines from PR Newswire, GlobeNewswire, and Newswire.ca.
 
 Scrapes press releases via sitemap crawling. Raw headlines are saved to a
 Hive-partitioned data lake:
@@ -13,6 +13,9 @@ Sources:
                     (Apr 2023–present, ~10K articles/month). Titles are
                     embedded in the sitemap XML — fast-path extraction
                     with no per-page HTTP.
+  Newswire.ca     — gzipped monthly sitemaps (same format as PR Newswire,
+                    2011–present, ~2.6K releases/month). No news:title in
+                    sitemap; headlines extracted from URL slugs (fast-path).
 
 S&P 500 filtering is done downstream in analysis notebooks.
 
@@ -33,6 +36,7 @@ import calendar
 import gc
 import gzip
 import logging
+import re
 import signal
 import sys
 import threading
@@ -41,6 +45,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
+from urllib.parse import unquote
 
 import polars as pl
 import requests
@@ -259,6 +264,89 @@ def _parse_sitemap_news_entries(xml_bytes):
 
 
 _WAYBACK_TIMESTAMPS = {
+    # Discovered via src/discover_wayback_timestamps.py on 2026-03-28.
+    # 79 new timestamps for the 2012-07 through 2019-12 gap, plus 9 existing.
+    # 11 months have no Wayback archive: 2012-07..09, 2015-03..04, 2016-10,
+    # 2018-02, 2018-06, 2019-02, 2019-10..11.
+    "2012-10": "20250801115512",
+    "2012-11": "20260102151437",
+    "2012-12": "20260101172855",
+    "2013-01": "20260102151215",
+    "2013-02": "20260101173112",
+    "2013-03": "20260102151242",
+    "2013-04": "20260101173130",
+    "2013-05": "20260102195915",
+    "2013-06": "20260102151431",
+    "2013-07": "20260102151315",
+    "2013-08": "20260101172918",
+    "2013-09": "20260102151409",
+    "2013-10": "20260102151158",
+    "2013-11": "20260102190551",
+    "2013-12": "20260101173135",
+    "2014-01": "20260102151232",
+    "2014-02": "20260101173125",
+    "2014-03": "20260103025302",
+    "2014-04": "20260101172908",
+    "2014-05": "20260102151433",
+    "2014-06": "20260102151316",
+    "2014-07": "20260102151358",
+    "2014-08": "20260101172939",
+    "2014-09": "20260103003912",
+    "2014-10": "20260102151408",
+    "2014-11": "20260102151424",
+    "2014-12": "20260101173054",
+    "2015-01": "20260102151450",
+    "2015-02": "20260101173018",
+    "2015-05": "20260102151626",
+    "2015-06": "20260102151339",
+    "2015-07": "20260102151419",
+    "2015-08": "20260101173215",
+    "2015-09": "20260102151203",
+    "2015-10": "20260102151419",
+    "2015-11": "20260102151208",
+    "2015-12": "20260101173150",
+    "2016-01": "20260102151207",
+    "2016-02": "20260101172936",
+    "2016-03": "20260102151343",
+    "2016-04": "20260101173104",
+    "2016-05": "20260102151518",
+    "2016-06": "20260102151351",
+    "2016-07": "20260102151310",
+    "2016-08": "20260101173140",
+    "2016-09": "20260102151357",
+    "2016-11": "20260102151315",
+    "2016-12": "20260101173121",
+    "2017-01": "20260102151152",
+    "2017-02": "20260101173117",
+    "2017-03": "20260102151354",
+    "2017-04": "20260101173157",
+    "2017-05": "20260102151410",
+    "2017-06": "20260102151313",
+    "2017-07": "20260102151242",
+    "2017-08": "20260101172946",
+    "2017-09": "20260102151347",
+    "2017-10": "20260102151324",
+    "2017-11": "20260102151418",
+    "2017-12": "20260101173000",
+    "2018-01": "20260102151426",
+    "2018-03": "20260102151402",
+    "2018-04": "20260101172925",
+    "2018-05": "20260102151337",
+    "2018-07": "20260102151405",
+    "2018-08": "20260102151505",
+    "2018-09": "20260102151218",
+    "2018-10": "20260102151341",
+    "2018-11": "20260102151319",
+    "2018-12": "20260102151259",
+    "2019-01": "20260102151151",
+    "2019-03": "20260102151223",
+    "2019-04": "20260102151503",
+    "2019-05": "20260102151413",
+    "2019-06": "20260102151701",
+    "2019-07": "20260102151314",
+    "2019-08": "20260102151309",
+    "2019-09": "20260102151447",
+    "2019-12": "20260102151413",
     "2021-03": "20250402102233",
     "2021-09": "20250402095524",
     "2021-10": "20240101020755",
@@ -296,6 +384,10 @@ class PRNewswireScraper:
     def date_from_url(self, url):
         """PR Newswire URLs don't contain dates."""
         return None
+
+    def press_release_url_filter(self, url):
+        """Return whether a sitemap URL is a press release page."""
+        return "/news-release" in url.lower()
 
     def _fetch_sitemap_xml(self, year, month):
         """Fetch and decompress the gzipped monthly sitemap.
@@ -374,7 +466,7 @@ class PRNewswireScraper:
 
         urls = _parse_sitemap_urls(
             xml_bytes,
-            url_filter=lambda u: "/news-release" in u.lower(),
+            url_filter=self.press_release_url_filter,
         )
         logger.info(f"{self.NAME}: {len(urls)} URLs for {month_str}")
         return urls
@@ -417,12 +509,45 @@ class GlobeNewswireScraper:
     This means headlines can be extracted directly from the sitemap XML
     without fetching individual article pages (fast-path).
 
-    Coverage: April 2023 to present (~10K articles/month).
+    Coverage: Apr 2023 to present (~10K articles/month).
     """
 
     NAME = "GlobeNewswire"
     SOURCE_KEY = "globenewswire"
     SITEMAP_INDEX_URL = "https://sitemaps.globenewswire.com/news-en.xml"
+    EARLIEST_MONTH = (2023, 4)  # Earliest month with a sitemap on the live index
+
+    _available_months_cache = None
+
+    def available_months(self):
+        """Discover which monthly sitemaps exist by parsing the sitemap index.
+
+        Queries ``news-en.xml`` once and caches the result for the process
+        lifetime. Returns a set of (year, month) tuples.
+        """
+        if self._available_months_cache is not None:
+            return self._available_months_cache
+
+        logger.info(f"{self.NAME}: fetching sitemap index {self.SITEMAP_INDEX_URL}")
+        resp = _fetch(self.SITEMAP_INDEX_URL, delay=SITEMAP_DELAY)
+        if resp is None:
+            logger.warning(f"{self.NAME}: could not fetch sitemap index")
+            self._available_months_cache = set()
+            return self._available_months_cache
+
+        child_urls = _parse_sitemap_index(resp.content)
+        months = set()
+        for url in child_urls:
+            # Pattern: .../news/en/YYYY-MM.xml  (skip latest.xml)
+            if "latest.xml" in url:
+                continue
+            # Extract YYYY-MM from the URL
+            m = re.search(r"/(\d{4})-(\d{2})\.xml", url)
+            if m:
+                months.add((int(m.group(1)), int(m.group(2))))
+        self._available_months_cache = months
+        logger.info(f"{self.NAME}: sitemap index has {len(months)} monthly sitemaps")
+        return months
 
     def date_from_url(self, url):
         """Extract date from GlobeNewswire URL.
@@ -438,6 +563,10 @@ class GlobeNewswireScraper:
         except (ValueError, IndexError):
             pass
         return None
+
+    def press_release_url_filter(self, url):
+        """Return whether a sitemap URL is a press release page."""
+        return "/news-release/" in url.lower()
 
     def _fetch_sitemap_xml(self, year, month):
         """Fetch the monthly sitemap XML (plain, not gzipped).
@@ -484,7 +613,7 @@ class GlobeNewswireScraper:
             return []
         urls = _parse_sitemap_urls(
             xml_bytes,
-            url_filter=lambda u: "/news-release/" in u.lower(),
+            url_filter=self.press_release_url_filter,
         )
         logger.info(f"{self.NAME}: {len(urls)} URLs for {month_str}")
         return urls
@@ -512,7 +641,199 @@ class GlobeNewswireScraper:
         return None
 
 
-ALL_SCRAPERS = [PRNewswireScraper(), GlobeNewswireScraper()]
+class NewswireCaScraper:
+    """Scraper for Newswire.ca / Cision (newswire.ca).
+
+    Newswire.ca hosts gzipped monthly sitemaps with the same naming convention
+    as PR Newswire:
+        https://www.newswire.ca/sitemap-gz.xml              (sitemap index)
+        https://www.newswire.ca/Sitemap_Index_Mon_YYYY.xml.gz  (monthly gz)
+
+    The sitemaps include ``<lastmod>`` timestamps but **no** Google News
+    metadata (``news:title``).  To avoid ~465K per-page HTTP fetches, this
+    scraper extracts approximate headlines from the URL slug:
+
+        /news-releases/some-headline-text-123456789.html
+        → "Some Headline Text"
+
+    Slug-derived headlines preserve all content words, which is sufficient
+    for TF-IDF crosswalk matching against RavenPack.
+
+    Coverage: ~2,600 releases/month, 2011–present (179 monthly sitemaps).
+    """
+
+    NAME = "Newswire.ca"
+    SOURCE_KEY = "newswireca"
+    SITEMAP_INDEX_URL = "https://www.newswire.ca/sitemap-gz.xml"
+    EARLIEST_MONTH = (2011, 1)  # Earliest month with a validated live sitemap
+
+    _MONTH_ABBR = {
+        1: "Jan",
+        2: "Feb",
+        3: "Mar",
+        4: "Apr",
+        5: "May",
+        6: "Jun",
+        7: "Jul",
+        8: "Aug",
+        9: "Sep",
+        10: "Oct",
+        11: "Nov",
+        12: "Dec",
+    }
+
+    def date_from_url(self, url):
+        """Newswire.ca URLs don't contain dates."""
+        return None
+
+    def press_release_url_filter(self, url):
+        """Return whether a sitemap URL is a press release page."""
+        return "/news-releases/" in url.lower()
+
+    @staticmethod
+    def _headline_from_slug(url):
+        """Extract an approximate headline from a Newswire.ca URL slug.
+
+        URL format:
+            .../news-releases/{slug}-{numeric_id}.html
+
+        Returns a title-cased string with the numeric suffix removed,
+        or None if the URL doesn't match the expected pattern.
+        """
+        # Find the slug portion after /news-releases/
+        idx = url.lower().find("/news-releases/")
+        if idx < 0:
+            return None
+        slug = url[idx + len("/news-releases/"):]
+        slug = slug.split("?", 1)[0].split("#", 1)[0]
+        # Strip .html extension
+        if slug.endswith(".html"):
+            slug = slug[:-5]
+        # Remove trailing numeric ID (e.g., -829648686)
+        slug = re.sub(r"-\d{6,}$", "", slug)
+        if not slug:
+            return None
+        slug = unquote(slug)
+        # Convert hyphens to spaces and title-case
+        return slug.replace("-", " ").strip().title()
+
+    def _fetch_sitemap_xml(self, year, month):
+        """Fetch and decompress the gzipped monthly sitemap.
+
+        Same gz format as PR Newswire.  Returns decompressed XML bytes,
+        or None on failure.
+        """
+        month_str = f"{year:04d}-{month:02d}"
+        abbr = self._MONTH_ABBR.get(month)
+        if abbr is None:
+            return None
+
+        gz_url = f"https://www.newswire.ca/Sitemap_Index_{abbr}_{year}.xml.gz"
+        logger.info(f"{self.NAME}: fetching {gz_url}")
+        resp = _fetch(gz_url, delay=SITEMAP_DELAY)
+
+        if resp is not None:
+            try:
+                return gzip.decompress(resp.content)
+            except Exception as e:
+                logger.warning(f"{self.NAME}: decompress failed for {month_str}: {e}")
+
+        logger.warning(f"{self.NAME}: no sitemap available for {month_str}")
+        return None
+
+    def _parse_headline_from_soup(self, soup, url):
+        """Parse headline from a Newswire.ca article page (slow-path fallback)."""
+        headline = None
+        for selector in ["h1.release-header__title", "h1"]:
+            tag = soup.select_one(selector)
+            if tag and tag.get_text(strip=True):
+                headline = tag.get_text(strip=True)
+                break
+        if not headline:
+            return None
+        pub_date = None
+        for attr in [{"name": "date"}, {"property": "article:published_time"}]:
+            meta = soup.find("meta", attrs=attr)
+            if meta and meta.get("content"):
+                pub_date = meta["content"][:10]
+                break
+        return {"headline": headline, "source_url": url, "date": pub_date}
+
+    def parse_entries_from_xml(self, xml_bytes):
+        """Extract entries from sitemap using URL slugs + lastmod dates.
+
+        Newswire.ca sitemaps lack ``news:title``, so this method extracts
+        approximate headlines from URL slugs and dates from ``<lastmod>``.
+        Returns a list of {headline, source_url, date} dicts.
+        """
+        root = _xml_root(xml_bytes)
+        if root is None:
+            return []
+        url_elems = root.findall("sm:url", SITEMAP_NS)
+        if not url_elems:
+            url_elems = root.findall("url")
+        entries = []
+        for url_elem in url_elems:
+            loc = url_elem.find("sm:loc", SITEMAP_NS)
+            if loc is None:
+                loc = url_elem.find("loc")
+            if loc is None or not loc.text:
+                continue
+            url = loc.text.strip()
+            if "/news-releases/" not in url.lower():
+                continue
+            headline = self._headline_from_slug(url)
+            if not headline:
+                continue
+            # Date from lastmod
+            pub_date = None
+            lastmod = url_elem.find("sm:lastmod", SITEMAP_NS)
+            if lastmod is None:
+                lastmod = url_elem.find("lastmod")
+            if lastmod is not None and lastmod.text:
+                pub_date = lastmod.text[:10]
+            if pub_date:
+                entries.append({"headline": headline, "source_url": url, "date": pub_date})
+        return entries
+
+    def sitemap_urls_for_month(self, year, month):
+        """Get press release URLs from gzipped monthly sitemaps."""
+        month_str = f"{year:04d}-{month:02d}"
+        xml_bytes = self._fetch_sitemap_xml(year, month)
+        if xml_bytes is None:
+            logger.warning(f"{self.NAME}: no sitemap available for {month_str}")
+            return []
+        urls = _parse_sitemap_urls(
+            xml_bytes,
+            url_filter=self.press_release_url_filter,
+        )
+        logger.info(f"{self.NAME}: {len(urls)} URLs for {month_str}")
+        return urls
+
+    def sitemap_entries_for_month(self, year, month):
+        """Extract entries from monthly sitemap using slug extraction.
+
+        Uses URL slug + lastmod fast path.  Returns None only if the
+        sitemap is unavailable.
+        """
+        month_str = f"{year:04d}-{month:02d}"
+        xml_bytes = self._fetch_sitemap_xml(year, month)
+        if xml_bytes is None:
+            return None
+        entries = self.parse_entries_from_xml(xml_bytes)
+        if entries:
+            logger.info(
+                f"{self.NAME}: {len(entries)} entries via slug extraction for {month_str}"
+            )
+            return entries
+        logger.info(
+            f"{self.NAME}: slug extraction yielded 0 entries for {month_str}; "
+            f"falling back to per-page fetches"
+        )
+        return None
+
+
+ALL_SCRAPERS = [PRNewswireScraper(), GlobeNewswireScraper(), NewswireCaScraper()]
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +1042,12 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
         return (0, 0)
 
     # --- Fast path: headlines from sitemap metadata (no page fetches) ---
-    entries = _parse_sitemap_news_entries(xml_bytes)
+    # Prefer scraper-specific extraction (e.g. slug-based) if available,
+    # otherwise fall back to standard Google News metadata parsing.
+    if hasattr(scraper, "parse_entries_from_xml"):
+        entries = scraper.parse_entries_from_xml(xml_bytes)
+    else:
+        entries = _parse_sitemap_news_entries(xml_bytes)
     if entries:
         logger.info(
             f"{scraper.NAME}: {len(entries)} entries with sitemap metadata for {month_str}"
@@ -752,10 +1078,12 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
         f"{scraper.NAME}: no <news:title> in sitemap for {month_str}; "
         f"falling back to per-page fetches"
     )
-    urls = _parse_sitemap_urls(
-        xml_bytes,
-        url_filter=lambda u: "/news-release" in u.lower(),
+    url_filter = getattr(
+        scraper,
+        "press_release_url_filter",
+        lambda u: "/news-release" in u.lower(),
     )
+    urls = _parse_sitemap_urls(xml_bytes, url_filter=url_filter)
     logger.info(f"{scraper.NAME}: {len(urls)} URLs for {month_str}")
     if not urls:
         _mark_month_complete(output_dir, source_key, year, month)
@@ -868,6 +1196,11 @@ def pull_newswire_full(
         for scraper in ALL_SCRAPERS:
             if shutdown.should_stop:
                 break
+
+            # Skip months before the scraper's earliest coverage
+            earliest = getattr(scraper, "EARLIEST_MONTH", None)
+            if earliest and (year, month) < earliest:
+                continue
 
             result = _crawl_scraper_for_month(
                 scraper, year, month, output_dir, shutdown
