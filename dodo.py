@@ -108,6 +108,7 @@ def task_pull():
         "targets": [DATA_DIR / "ravenpack_djpr.parquet"],
         "file_dep": ["./src/settings.py", "./src/pull_ravenpack.py"],
         "clean": [],
+        "verbosity": 2,
     }
 
     yield {
@@ -123,6 +124,7 @@ def task_pull():
         ],
         "file_dep": ["./src/settings.py", "./src/pull_sp500_constituents.py"],
         "clean": [],
+        "verbosity": 2,
     }
 
     if USE_CACHED_SCRAPES:
@@ -218,6 +220,7 @@ def task_create_crosswalk():
         ],
         "task_dep": nw_task_dep,
         "clean": [],
+        "verbosity": 2,
     }
 
     # GDELT crosswalk
@@ -240,6 +243,7 @@ def task_create_crosswalk():
         ],
         "task_dep": gdelt_task_dep,
         "clean": [],
+        "verbosity": 2,
     }
 
 
