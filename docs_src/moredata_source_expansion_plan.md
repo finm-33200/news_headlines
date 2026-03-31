@@ -23,15 +23,17 @@ each, and recommends a priority order for implementation.
 |--------|--------|----------|---------|
 | **PR Newswire** | Gz sitemap crawl + Wayback fallback | 2010–present | ~4k day-parquets, gaps in 2012–2019 |
 | **GDELT** | BigQuery S&P 500 filter | Feb 2015–present | Monthly parquets |
-| **GlobeNewswire** | (attempted, removed) | 2 days only | 2 day-parquets (2026-02) |
+| **GlobeNewswire** | Plain monthly sitemaps (fast-path) | Apr 2023–present | **Implemented** — ~10K headlines/month |
 
 ### Known gaps
 
-1. **PR Newswire 2012-07 through 2019-12**: Live sitemaps 404; only 9 Wayback
-   timestamps populated. See `docs_src/todo_backfill_newswire_coverage.md`.
+1. **PR Newswire 2012-07 through 2019-12**: historical monthly sitemap gap.
+   `_WAYBACK_TIMESTAMPS` now covers 79 of 90 months; 11 months still have no
+   validated Wayback archive. See `docs_src/todo_backfill_newswire_coverage.md`.
 2. **Business Wire**: Removed from scraper — sitemaps consistently timeout.
-3. **GlobeNewswire**: Removed — believed to have only ~2 days in sitemap.
-   **This is wrong** — see findings below.
+3. **GlobeNewswire**: ~~Removed~~ **Now implemented** — 36 monthly sitemaps on
+   `sitemaps.globenewswire.com`, Apr 2023–present. Validated: 10K+ headlines/month
+   extracted via fast-path (titles in sitemap XML, no per-page HTTP).
 
 ### Architecture notes
 
@@ -170,7 +172,8 @@ is sound:
 1. Create `src/discover_wayback_timestamps.py`
 2. Query Wayback CDX for each of the ~90 missing monthly sitemap gz URLs
 3. Populate `_WAYBACK_TIMESTAMPS` in `pull_free_newswires.py`
-4. Re-run `--full --start 2012-07-01 --end 2020-01-01`
+4. Run `python src/discover_wayback_timestamps.py --validate-existing`
+5. Re-run `--full --start 2012-07-01 --end 2020-01-01`
 
 **Note**: On-disk data shows some coverage in 2012-2019 already (136-284
 day-parquets/year vs 328+ for complete years), suggesting partial success on
@@ -257,11 +260,11 @@ SEC filers, so non-US and private-company press releases won't appear here.
 
 | Priority | Source | Why | Effort | Expected Impact |
 |----------|--------|-----|--------|-----------------|
-| **P0** | GlobeNewswire (sitemap) | Major discovery — 3 years of monthly sitemaps with titles. High RP overlap. Minimal code. | Small | High |
-| **P1** | PR Newswire backfill | Known gap, documented plan, just needs Wayback timestamp discovery | Small | High (fills 90-month gap) |
-| **P2** | Newswire.ca / Cision | Same gz sitemap pattern as PRN — near-copy of existing scraper | Small | Moderate |
-| **P3** | Business Wire (Wayback) | Huge RP overlap but requires new Wayback CDX enumeration pattern | Medium | High |
-| **P4** | SEC EDGAR EFTS | Different content path, deep history (2001+), well-documented API | Medium | Moderate-High |
+| **P0** | GlobeNewswire (sitemap) | **DONE** — scraper implemented and validated. 36 months, ~10K headlines/month. | Small | High |
+| **P1** | PR Newswire backfill | Timestamp block largely populated; validate and backfill remaining 11 no-archive months only if new captures appear | Small | High (fills 90-month gap) |
+| **P2** | Newswire.ca / Cision | **DONE** — `NewswireCaScraper` implemented. 179 monthly gz sitemaps, ~2.6K/month. Slug-based fast-path (0 page fetches). | Small | Moderate |
+| **P3** | Business Wire (Wayback) | **TOOLING DONE** — CDX enumeration + Wayback headline fetcher built. 218 articles/day from CDX. Two-phase pipeline. | Medium | High |
+| **P4** | SEC EDGAR EFTS | **TOOLING DONE** — EFTS query + EX-99.1 exhibit headline extraction. 51 headlines from 66 exhibits (77% yield). | Medium | Moderate-High |
 
 ---
 
@@ -269,42 +272,85 @@ SEC filers, so non-US and private-company press releases won't appear here.
 
 ### Phase 1: Quick wins (P0 + P1)
 
-**GlobeNewswire scraper:**
-1. Add `GlobeNewswireScraper` class to `pull_free_newswires.py`
-2. Fetch `sitemaps.globenewswire.com/news-en.xml` → parse monthly sitemap URLs
-3. For each month, fetch `sitemaps.globenewswire.com/news/en/YYYY-MM.xml`
-4. Extract title, URL, date from sitemap entries (fast path — no page fetches)
-5. Save to `newswire_headlines/source=globenewswire/year=.../month=.../day=.../data.parquet`
-6. Run crosswalk and measure impact on RP match rate
+**GlobeNewswire scraper: DONE**
+- `GlobeNewswireScraper` class added to `pull_free_newswires.py`
+- Sitemap index discovery via `available_months()` method
+- `EARLIEST_MONTH` attribute skips pre-2023 months in full crawls
+- Validated: 9,919 headlines extracted for Jan 2025 (0 page fetches)
+- Full backfill: `python src/pull_free_newswires.py --full --start 2023-04-01`
 
 **PR Newswire Wayback backfill:**
-1. Implement `src/discover_wayback_timestamps.py` per the existing TODO doc
-2. Run against 90 missing months
-3. Update `_WAYBACK_TIMESTAMPS` dict
-4. Run `pull_free_newswires.py --full --start 2012-07-01 --end 2020-01-01`
+- `src/discover_wayback_timestamps.py` implemented and validated (dry-run)
+- Full discovery run in progress (querying CDX for ~90 missing months)
+- Next steps: update `_WAYBACK_TIMESTAMPS` with results, re-crawl gap months
 
 **Validation**: Re-run `save_coverage_chart.py` and `03_crosswalk_quality_ipynb.py`
 to visualize the before/after impact on RP match rate.
 
-### Phase 2: Cision/CNW (P2)
+### Phase 2: Cision/CNW (P2) — DONE
 
-1. Add `NewswireCaScraper` class — reuse PRN gz sitemap logic with `newswire.ca` base URL
-2. Full crawl of 185 monthly sitemaps (2010–2026)
-3. Measure incremental RP overlap
+`NewswireCaScraper` class added to `pull_free_newswires.py`:
+- Reuses PRN gz sitemap structure (`Sitemap_Index_{Mon}_{YYYY}.xml.gz`)
+- 179 monthly sitemaps, ~2,600 releases/month (2011–present)
+- **Slug-based fast-path**: headlines extracted from URL slugs + `lastmod`
+  dates, with **0 per-page HTTP fetches**. Slug-derived headlines are
+  approximate (title-cased, no punctuation) but sufficient for TF-IDF
+  crosswalk matching.
+- `_crawl_scraper_for_month` updated to call `scraper.parse_entries_from_xml()`
+  when available, enabling scraper-specific fast paths.
+- Full backfill: `python src/pull_free_newswires.py --full --start 2011-01-01`
 
-### Phase 3: Wayback-based sources (P3)
+Validated: 2,613 headlines extracted for Jan 2023, 31 days, 0 page fetches.
 
-1. Build a `WaybackCDXEnumerator` utility class for discovering article URLs
-2. Implement `BusinessWireScraper` using CDX URL enumeration + page title extraction
-3. Rate-limit to 1-2 req/s against archive.org
-4. This is a long-running crawl (days/weeks for full history)
+### Phase 3: Business Wire (P3) — TOOLING DONE
 
-### Phase 4: EDGAR (P4)
+Business Wire's live sitemaps still timeout, so a two-phase Wayback-based
+pipeline was built:
 
-1. Add `EdgarPressReleaseScraper` using EFTS search API
-2. Query `forms=8-K, q="press release"` by date
-3. For each hit, fetch EX-99.1 exhibit and extract headline
-4. Requires SEC User-Agent compliance
+**Phase 3a: URL enumeration** (`src/enumerate_businesswire_urls.py`)
+- Queries Wayback CDX for `businesswire.com/news/home/YYYYMMDD*` per day
+- Client-side filter for English articles (`/en/` suffix)
+- Saves URL inventory as Hive-partitioned parquets
+- Validated: 218 English articles for Jan 2, 2024; 308 for Jan 3, 2024
+- Full enumeration estimate: ~7,300 CDX queries = ~3 hours
+
+**Phase 3b: Headline extraction** (`src/fetch_businesswire_headlines.py`)
+- Reads URL inventory, fetches each archived page from Wayback
+- Extracts headline from `<h1>` tag, date from URL
+- Rate-limited to 1 req/s, 2 concurrent workers
+- Resumable (completed days skipped)
+- Full extraction estimate: ~1.6M pages at 1 req/s = ~18 days
+
+**To run:**
+```bash
+# Phase 1: enumerate URLs (fast, ~3 hours for 20 years)
+python src/enumerate_businesswire_urls.py --start 2004-01-01 --end 2026-04-01
+
+# Phase 2: fetch headlines (slow, days/weeks)
+python src/fetch_businesswire_headlines.py --start 2004-01-01 --end 2026-04-01
+```
+
+### Phase 4: EDGAR EFTS (P4) — TOOLING DONE
+
+`src/pull_edgar_press_releases.py` built and validated:
+- Queries EFTS for `forms=8-K, q="press release"` by date
+- Paginates through all results (100/page)
+- For each EX-99.1 exhibit: fetches from SEC EDGAR, extracts headline
+  from first bold text (with boilerplate filtering)
+- Includes a read-only `--validate-date YYYY-MM-DD` mode to report EFTS hits,
+  EX-99 exhibit counts, extraction yield, sample headlines, and sample failed
+  exhibit URLs before running a wider backfill
+- SEC-compliant User-Agent header
+- Validated: 179 EFTS hits → 66 EX-99 exhibits → 51 headlines for Jan 2, 2024
+  (77% yield; remaining 23% have non-standard exhibit formatting)
+- Coverage: 2001–present, ~150–200 filings/weekday
+- Full backfill estimate: ~24 years × 250 trading days × 150 exhibits × 0.2s = ~50 hours
+
+**To run:**
+```bash
+python src/pull_edgar_press_releases.py --validate-date 2024-01-02
+python src/pull_edgar_press_releases.py --start 2020-01-01 --end 2026-04-01
+```
 
 ---
 
@@ -350,4 +396,15 @@ find more matches. But that's a separate decision.
 
 ## Files Changed
 
-- `docs_src/moredata_source_expansion_plan.md` — this document (new)
+- `src/pull_free_newswires.py` — Added `GlobeNewswireScraper`, `NewswireCaScraper`
+  classes. Updated `_crawl_scraper_for_month` to support scraper-specific
+  `parse_entries_from_xml()` fast paths. `ALL_SCRAPERS` now includes 3 sources.
+- `src/discover_wayback_timestamps.py` — Standalone Wayback CDX timestamp discovery
+  for the PR Newswire 2012–2019 gap (new)
+- `src/enumerate_businesswire_urls.py` — Wayback CDX URL enumeration for Business
+  Wire articles by date (new, phase 3a)
+- `src/fetch_businesswire_headlines.py` — Wayback page fetcher + headline extraction
+  for Business Wire (new, phase 3b)
+- `src/pull_edgar_press_releases.py` — EDGAR EFTS press-release headline puller
+  with EX-99.1 exhibit parsing (new, phase 4)
+- `docs_src/moredata_source_expansion_plan.md` — this document (new, updated)

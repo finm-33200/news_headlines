@@ -134,10 +134,16 @@ python ./src/pull_free_newswires.py --status
 
 #### PR Newswire Backfill (2012–2019)
 
-PR Newswire's live sitemaps return 404 for mid-2012 through end-2019. A
-standalone script discovers valid Wayback Machine timestamps for these months:
+PR Newswire's live monthly sitemap path has a historical gap across
+`2012-07` through `2019-12`. The current `_WAYBACK_TIMESTAMPS` block covers
+79 of those 90 months; the remaining 11 months currently have no validated
+Wayback archive. Use the standalone discovery script to validate or extend the
+timestamp block:
 
 ```bash
+# Validate the existing timestamp block without calling Wayback
+python ./src/discover_wayback_timestamps.py --validate-existing
+
 # Dry-run: see which months have Wayback archives
 python ./src/discover_wayback_timestamps.py --dry-run
 
@@ -154,6 +160,60 @@ The script outputs a Python dict literal to paste into `_WAYBACK_TIMESTAMPS` in
 ```bash
 python ./src/pull_free_newswires.py --full --start 2012-07-01 --end 2020-01-01
 ```
+
+#### Business Wire (Wayback Machine)
+
+Business Wire's live sitemaps timeout, so headlines are collected via a
+two-phase Wayback Machine pipeline. Both scripts are resumable and safe to
+`Ctrl+C`.
+
+**Phase 1 — URL enumeration** queries the Wayback CDX API for archived
+Business Wire article URLs, one day at a time:
+
+```bash
+# Enumerate a date range (~3 hours for 20 years)
+python ./src/enumerate_businesswire_urls.py --start 2004-01-01 --end 2026-04-01
+
+# Check inventory progress
+python ./src/enumerate_businesswire_urls.py --status
+
+# Inspect slug-headline coverage for one day
+python ./src/enumerate_businesswire_urls.py --spot-check 2024-01-02
+```
+
+**Phase 2 — headline extraction** reads the URL inventory produced above,
+uses slug-derived headlines where available (~90–98% of URLs), and fetches
+the remaining pages from Wayback:
+
+```bash
+# Fetch headlines for enumerated URLs
+python ./src/fetch_businesswire_headlines.py --start 2024-01-01 --end 2024-02-01
+
+# Check progress
+python ./src/fetch_businesswire_headlines.py --status
+```
+
+Output lands in `newswire_headlines/source=businesswire/...` and is
+automatically picked up by the crosswalk.
+
+#### SEC EDGAR Press Releases
+
+Pulls press-release headlines from SEC EDGAR by searching 8-K filings for
+EX-99.1 exhibits via the EFTS full-text search API. Coverage: 2001–present.
+
+```bash
+# Validate extraction for one date before running a wider backfill
+python ./src/pull_edgar_press_releases.py --validate-date 2024-01-02
+
+# Pull a date range
+python ./src/pull_edgar_press_releases.py --start 2020-01-01 --end 2026-04-01
+
+# Check progress
+python ./src/pull_edgar_press_releases.py --status
+```
+
+Output lands in `newswire_headlines/source=edgar_8k/...` and is
+automatically picked up by the crosswalk.
 
 ### Formatting
 
