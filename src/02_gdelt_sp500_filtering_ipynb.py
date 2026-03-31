@@ -42,7 +42,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pl
-from google.cloud import bigquery
 from pull_gdelt_sp500_headlines import (
     GDELT_SP500_DIR,
     SAMPLE_MONTH,
@@ -52,9 +51,13 @@ from pull_gdelt_sp500_headlines import (
 from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
-GCP_PROJECT = config("GCP_PROJECT")
+GCP_PROJECT = config("GCP_PROJECT", default=None)
+_HAS_BQ = GCP_PROJECT is not None
 
-client = bigquery.Client(project=GCP_PROJECT)
+if _HAS_BQ:
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=GCP_PROJECT)
 
 # Derive date range from the sample month
 _sm_dt = datetime.strptime(SAMPLE_MONTH, "%Y-%m").date()
@@ -151,86 +154,91 @@ for _, row in short_names.head(20).iterrows():
 # each stage with cheap `COUNT(*)` queries against the sample month.
 
 # %%
-funnel_queries = {
-    "1. All GKG rows (in partition window)": f"""
-        SELECT COUNT(*) AS n
-        FROM `gdelt-bq.gdeltv2.gkg_partitioned`
-        WHERE _PARTITIONTIME >= TIMESTAMP('{SAMPLE_START}')
-          AND _PARTITIONTIME < TIMESTAMP('{SAMPLE_END}')
-    """,
-    "2. Has headline (<PAGE_TITLE>)": f"""
-        SELECT COUNT(*) AS n
-        FROM `gdelt-bq.gdeltv2.gkg_partitioned`
-        WHERE _PARTITIONTIME >= TIMESTAMP('{SAMPLE_START}')
-          AND _PARTITIONTIME < TIMESTAMP('{SAMPLE_END}')
-          AND Extras LIKE '%<PAGE_TITLE>%'
-    """,
-    "3. English only (TranslationInfo IS NULL)": f"""
-        SELECT COUNT(*) AS n
-        FROM `gdelt-bq.gdeltv2.gkg_partitioned`
-        WHERE _PARTITIONTIME >= TIMESTAMP('{SAMPLE_START}')
-          AND _PARTITIONTIME < TIMESTAMP('{SAMPLE_END}')
-          AND Extras LIKE '%<PAGE_TITLE>%'
-          AND TranslationInfo IS NULL
-    """,
-    "4. Has V2Organizations": f"""
-        SELECT COUNT(*) AS n
-        FROM `gdelt-bq.gdeltv2.gkg_partitioned`
-        WHERE _PARTITIONTIME >= TIMESTAMP('{SAMPLE_START}')
-          AND _PARTITIONTIME < TIMESTAMP('{SAMPLE_END}')
-          AND Extras LIKE '%<PAGE_TITLE>%'
-          AND TranslationInfo IS NULL
-          AND V2Organizations IS NOT NULL
-          AND V2Organizations != ''
-    """,
-}
+if _HAS_BQ:
+    funnel_queries = {
+        "1. All GKG rows (in partition window)": f"""
+            SELECT COUNT(*) AS n
+            FROM `gdelt-bq.gdeltv2.gkg_partitioned`
+            WHERE _PARTITIONTIME >= TIMESTAMP('{SAMPLE_START}')
+              AND _PARTITIONTIME < TIMESTAMP('{SAMPLE_END}')
+        """,
+        "2. Has headline (<PAGE_TITLE>)": f"""
+            SELECT COUNT(*) AS n
+            FROM `gdelt-bq.gdeltv2.gkg_partitioned`
+            WHERE _PARTITIONTIME >= TIMESTAMP('{SAMPLE_START}')
+              AND _PARTITIONTIME < TIMESTAMP('{SAMPLE_END}')
+              AND Extras LIKE '%<PAGE_TITLE>%'
+        """,
+        "3. English only (TranslationInfo IS NULL)": f"""
+            SELECT COUNT(*) AS n
+            FROM `gdelt-bq.gdeltv2.gkg_partitioned`
+            WHERE _PARTITIONTIME >= TIMESTAMP('{SAMPLE_START}')
+              AND _PARTITIONTIME < TIMESTAMP('{SAMPLE_END}')
+              AND Extras LIKE '%<PAGE_TITLE>%'
+              AND TranslationInfo IS NULL
+        """,
+        "4. Has V2Organizations": f"""
+            SELECT COUNT(*) AS n
+            FROM `gdelt-bq.gdeltv2.gkg_partitioned`
+            WHERE _PARTITIONTIME >= TIMESTAMP('{SAMPLE_START}')
+              AND _PARTITIONTIME < TIMESTAMP('{SAMPLE_END}')
+              AND Extras LIKE '%<PAGE_TITLE>%'
+              AND TranslationInfo IS NULL
+              AND V2Organizations IS NOT NULL
+              AND V2Organizations != ''
+        """,
+    }
 
-print(f"Filtering funnel for GDELT GKG ({SAMPLE_START} to {SAMPLE_END}):\n")
-print(f"{'Stage':<45} {'Rows':>12} {'% of prev':>10}")
-print("-" * 69)
+    print(f"Filtering funnel for GDELT GKG ({SAMPLE_START} to {SAMPLE_END}):\n")
+    print(f"{'Stage':<45} {'Rows':>12} {'% of prev':>10}")
+    print("-" * 69)
 
-funnel_counts = {}
-prev_n = None
-for label, query in funnel_queries.items():
-    result = client.query(query).result()
-    n = list(result)[0]["n"]
-    funnel_counts[label] = n
-    pct = f"{n / prev_n * 100:.1f}%" if prev_n else ""
-    print(f"{label:<45} {n:>12,} {pct:>10}")
-    prev_n = n
+    funnel_counts = {}
+    prev_n = None
+    for label, query in funnel_queries.items():
+        result = client.query(query).result()
+        n = list(result)[0]["n"]
+        funnel_counts[label] = n
+        pct = f"{n / prev_n * 100:.1f}%" if prev_n else ""
+        print(f"{label:<45} {n:>12,} {pct:>10}")
+        prev_n = n
 
-# Add the final stage from the local data
-n_sp500 = len(gd_sp)
-pct_sp500 = f"{n_sp500 / prev_n * 100:.1f}%"
-funnel_counts["5. Matches S&P 500 company name"] = n_sp500
-print(f"{'5. Matches S&P 500 company name':<45} {n_sp500:>12,} {pct_sp500:>10}")
+    # Add the final stage from the local data
+    n_sp500 = len(gd_sp)
+    pct_sp500 = f"{n_sp500 / prev_n * 100:.1f}%"
+    funnel_counts["5. Matches S&P 500 company name"] = n_sp500
+    print(f"{'5. Matches S&P 500 company name':<45} {n_sp500:>12,} {pct_sp500:>10}")
+else:
+    print("BigQuery not configured (GCP_PROJECT not set) — skipping filtering funnel.")
+    print("Set GCP_PROJECT in .env to run these queries.")
 
 # %%
-labels = list(funnel_counts.keys())
-counts = list(funnel_counts.values())
+if _HAS_BQ:
+    labels = list(funnel_counts.keys())
+    counts = list(funnel_counts.values())
 
-fig, ax = plt.subplots(figsize=(10, 5))
-bars = ax.barh(labels[::-1], counts[::-1], color="steelblue", edgecolor="white")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars = ax.barh(labels[::-1], counts[::-1], color="steelblue", edgecolor="white")
 
-for bar, count in zip(bars, counts[::-1]):
-    ax.text(
-        bar.get_width() + max(counts) * 0.01,
-        bar.get_y() + bar.get_height() / 2,
-        f"{count:,}",
-        va="center",
-        fontsize=9,
+    for bar, count in zip(bars, counts[::-1]):
+        ax.text(
+            bar.get_width() + max(counts) * 0.01,
+            bar.get_y() + bar.get_height() / 2,
+            f"{count:,}",
+            va="center",
+            fontsize=9,
+        )
+
+    ax.set_xlabel("Number of rows")
+    ax.set_title(f"GDELT Filtering Funnel ({SAMPLE_START} to {SAMPLE_END})")
+    ax.set_xlim(0, max(counts) * 1.15)
+    fig.tight_layout()
+    plt.show()
+
+    total_reduction = counts[0] / counts[-1] if counts[-1] > 0 else float("inf")
+    print(
+        f"\nTotal reduction: {counts[0]:,} → {counts[-1]:,} ({total_reduction:.0f}× smaller)"
     )
-
-ax.set_xlabel("Number of rows")
-ax.set_title(f"GDELT Filtering Funnel ({SAMPLE_START} to {SAMPLE_END})")
-ax.set_xlim(0, max(counts) * 1.15)
-fig.tight_layout()
-plt.show()
-
-total_reduction = counts[0] / counts[-1] if counts[-1] > 0 else float("inf")
-print(
-    f"\nTotal reduction: {counts[0]:,} → {counts[-1]:,} ({total_reduction:.0f}× smaller)"
-)
 
 # %% [markdown]
 # ---
