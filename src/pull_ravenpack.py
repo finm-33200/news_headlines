@@ -32,7 +32,7 @@ from settings import config
 DATA_DIR = Path(config("DATA_DIR"))
 WRDS_USERNAME = config("WRDS_USERNAME")
 
-RP_START_DATE = "2000-01-01"
+RP_START_DATE = "2010-01-01"
 
 
 def pull_ravenpack(
@@ -69,7 +69,7 @@ def pull_ravenpack(
     try:
         for year in range(start_year, end_year + 1):
             table = f"ravenpack_dj.rpa_djpr_equities_{year}"
-            print(f"Pulling {table}...")
+            print(f"Pulling {table}...", flush=True)
 
             query = f"""
             WITH single_firm AS (
@@ -121,12 +121,12 @@ def pull_ravenpack(
             try:
                 df_year = db.raw_sql(query)
             except ProgrammingError:
-                print(f"  {table}: skipping (table does not exist on WRDS)")
+                print(f"  {table}: skipping (table does not exist on WRDS)", flush=True)
                 continue
             except MemoryError:
                 raise
             except Exception as e:
-                print(f"  {table}: skipping ({type(e).__name__}: {e})")
+                print(f"  {table}: skipping ({type(e).__name__}: {e})", flush=True)
                 continue
 
             table_pa = pa.Table.from_pandas(df_year, preserve_index=False)
@@ -138,7 +138,7 @@ def pull_ravenpack(
 
             writer.write_table(table_pa)
             total_rows += table_pa.num_rows
-            print(f"  {table}: {table_pa.num_rows:,} rows")
+            print(f"  {table}: {table_pa.num_rows:,} rows", flush=True)
             del table_pa
             gc.collect()
     finally:
@@ -149,7 +149,7 @@ def pull_ravenpack(
         gc.collect()
 
     tmp_path.rename(output_path)
-    print(f"Total RavenPack headlines: {total_rows:,}")
+    print(f"Total RavenPack headlines: {total_rows:,}", flush=True)
     return total_rows
 
 
@@ -161,10 +161,10 @@ def load_ravenpack(data_dir=DATA_DIR):
 if __name__ == "__main__":
     path = Path(DATA_DIR) / "ravenpack_djpr.parquet"
     if path.exists():
-        print(f"Already exists: {path} — skipping pull.")
+        print(f"Already exists: {path} — skipping pull.", flush=True)
     else:
         pull_ravenpack(start_date=RP_START_DATE, output_path=path)
-        print(f"Saved to {path}")
+        print(f"Saved to {path}", flush=True)
     # Force-exit to avoid Windows access violation (0xC0000005) during
     # interpreter shutdown caused by native library cleanup (psycopg2/pyarrow).
     sys.stdout.flush()

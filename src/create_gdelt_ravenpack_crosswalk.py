@@ -219,30 +219,31 @@ def _print_status(output_path):
     """Print summary statistics for an existing crosswalk file."""
     output_path = Path(output_path)
     if not output_path.exists():
-        print(f"No crosswalk found at {output_path}")
+        print(f"No crosswalk found at {output_path}", flush=True)
         return
 
     cw = pl.read_parquet(output_path)
     n = len(cw)
-    print(f"Crosswalk: {output_path}")
-    print(f"  Rows: {n:,}")
+    print(f"Crosswalk: {output_path}", flush=True)
+    print(f"  Rows: {n:,}", flush=True)
 
     if n == 0:
         return
 
-    print(f"  Date range: {cw['date'].min()} to {cw['date'].max()}")
-    print(f"  Distinct dates: {cw['date'].n_unique()}")
-    print(f"  Distinct GDELT URLs: {cw['gdelt_source_url'].n_unique():,}")
-    print(f"  Distinct RP stories: {cw['rp_story_id'].n_unique():,}")
-    print(f"  Distinct RP entities: {cw['rp_entity_id'].n_unique():,}")
+    print(f"  Date range: {cw['date'].min()} to {cw['date'].max()}", flush=True)
+    print(f"  Distinct dates: {cw['date'].n_unique()}", flush=True)
+    print(f"  Distinct GDELT URLs: {cw['gdelt_source_url'].n_unique():,}", flush=True)
+    print(f"  Distinct RP stories: {cw['rp_story_id'].n_unique():,}", flush=True)
+    print(f"  Distinct RP entities: {cw['rp_entity_id'].n_unique():,}", flush=True)
 
     scores = cw["fuzzy_score"]
     print(
         f"\n  Fuzzy score: min={scores.min():.1f}, median={scores.median():.1f}, "
-        f"mean={scores.mean():.1f}, max={scores.max():.1f}"
+        f"mean={scores.mean():.1f}, max={scores.max():.1f}",
+        flush=True,
     )
 
-    print("\n  Matches by GDELT source:")
+    print("\n  Matches by GDELT source:", flush=True)
     for row in (
         cw.group_by("gdelt_source_name")
         .agg(pl.len().alias("n"))
@@ -250,16 +251,16 @@ def _print_status(output_path):
         .head(20)
         .iter_rows(named=True)
     ):
-        print(f"    {row['gdelt_source_name']}: {row['n']:,}")
+        print(f"    {row['gdelt_source_name']}: {row['n']:,}", flush=True)
 
-    print("\n  Matches by RavenPack source:")
+    print("\n  Matches by RavenPack source:", flush=True)
     for row in (
         cw.group_by("rp_source_name")
         .agg(pl.len().alias("n"))
         .sort("n", descending=True)
         .iter_rows(named=True)
     ):
-        print(f"    {row['rp_source_name']}: {row['n']:,}")
+        print(f"    {row['rp_source_name']}: {row['n']:,}", flush=True)
 
 
 # ---------------------------------------------------------------------------
