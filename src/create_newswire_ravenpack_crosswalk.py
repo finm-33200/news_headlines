@@ -13,13 +13,20 @@ Each row links one newswire headline (identified by source_url) to its
 best-matching RavenPack headline (identified by rp_story_id), along with
 the RavenPack entity identifiers and fuzzy score.
 
+Processing is done month-by-month to keep memory usage bounded. Monthly
+chunks are written to a chunks directory and combined at the end.
+
 Usage:
-    python create_newswire_ravenpack_crosswalk.py                 # default
-    python create_newswire_ravenpack_crosswalk.py --min-score 85  # stricter
+    python create_newswire_ravenpack_crosswalk.py                 # full rebuild
+    python create_newswire_ravenpack_crosswalk.py --resume        # skip completed months
+    python create_newswire_ravenpack_crosswalk.py --start-month 2024-01 --end-month 2024-03
+    python create_newswire_ravenpack_crosswalk.py --combine-only  # merge existing chunks
+    python create_newswire_ravenpack_crosswalk.py --min-score 85  # stricter threshold
     python create_newswire_ravenpack_crosswalk.py --status        # show stats
 """
 
 import argparse
+import datetime
 import logging
 import re
 import time
@@ -34,7 +41,21 @@ from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
 DEFAULT_OUTPUT = DATA_DIR / "newswire_ravenpack_crosswalk.parquet"
+DEFAULT_CHUNKS_DIR = DATA_DIR / "crosswalk_chunks"
 DEFAULT_MIN_SCORE = 80.0
+
+CROSSWALK_SCHEMA = {
+    "date": pl.Date,
+    "nw_source_url": pl.Utf8,
+    "nw_headline": pl.Utf8,
+    "nw_source": pl.Utf8,
+    "rp_story_id": pl.Utf8,
+    "rp_entity_id": pl.Utf8,
+    "rp_entity_name": pl.Utf8,
+    "rp_headline": pl.Utf8,
+    "rp_source_name": pl.Utf8,
+    "fuzzy_score": pl.Float64,
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -57,7 +78,96 @@ def normalize_headline(text):
 
 
 # ---------------------------------------------------------------------------
-# Data loading
+# Data loading (per-month)
+# ---------------------------------------------------------------------------
+
+
+def _load_month_data(year, month, data_dir=DATA_DIR):
+    """Load newswire and RavenPack data for a single month.
+
+    Returns two eager DataFrames (nw, rp) filtered to the given month,
+    or (None, None) if either source has no data for that month.
+    """
+    month_start = datetime.date(year, month, 1)
+    if month == 12:
+        month_end = datetime.date(year + 1, 1, 1)
+    else:
+        month_end = datetime.date(year, month + 1, 1)
+
+    # Newswire: use Hive partition columns for efficient filtering
+    nw = (
+        load_newswire_headlines(data_dir)
+        .filter((pl.col("year") == year) & (pl.col("month") == month))
+        .collect()
+    )
+    nw = nw.with_columns(pl.col("date").cast(pl.Date).alias("pub_date"))
+    nw = nw.filter(
+        pl.col("headline").is_not_null() & (pl.col("headline").str.strip_chars() != "")
+    )
+    if len(nw) == 0:
+        return None, None
+
+    # RavenPack: filter to same month
+    rp = (
+        pl.scan_parquet(data_dir / "ravenpack_djpr.parquet")
+        .with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
+        .filter(
+            (pl.col("date") >= month_start) & (pl.col("date") < month_end)
+        )
+        .filter(
+            pl.col("headline").is_not_null()
+            & (pl.col("headline").str.strip_chars() != "")
+        )
+        .select(
+            "date",
+            "rp_story_id",
+            "rp_entity_id",
+            "entity_name",
+            "headline",
+            "source_name",
+        )
+        .collect()
+    )
+    if len(rp) == 0:
+        return None, None
+
+    return nw, rp
+
+
+def _discover_months(data_dir=DATA_DIR):
+    """Discover all YYYY-MM months available in both newswire and RavenPack.
+
+    Returns a sorted list of (year, month) tuples for months with data in
+    both sources.
+    """
+    # Newswire months from Hive partition columns
+    nw_months = (
+        load_newswire_headlines(data_dir)
+        .select("year", "month")
+        .unique()
+        .collect()
+    )
+    nw_set = set(zip(nw_months["year"].to_list(), nw_months["month"].to_list()))
+
+    # RavenPack months
+    rp_months = (
+        pl.scan_parquet(data_dir / "ravenpack_djpr.parquet")
+        .with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
+        .select(
+            pl.col("date").dt.year().alias("year"),
+            pl.col("date").dt.month().alias("month"),
+        )
+        .unique()
+        .collect()
+    )
+    rp_set = set(zip(rp_months["year"].to_list(), rp_months["month"].to_list()))
+
+    overlap = sorted(nw_set & rp_set)
+    return overlap
+
+
+# ---------------------------------------------------------------------------
+# Legacy data loading (kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
 
@@ -156,7 +266,50 @@ def _match_day(nw_day, rp_day, date_val, min_score):
 
 
 # ---------------------------------------------------------------------------
-# Main crosswalk builder
+# Per-month matching
+# ---------------------------------------------------------------------------
+
+
+def _build_month(year, month, min_score, chunks_dir, data_dir=DATA_DIR):
+    """Process a single month: load data, match day-by-day, write chunk.
+
+    Returns the number of match rows written, or -1 if no data for this month.
+    """
+    label = f"{year:04d}-{month:02d}"
+    chunk_path = Path(chunks_dir) / f"{label}.parquet"
+
+    nw, rp = _load_month_data(year, month, data_dir)
+    if nw is None or rp is None:
+        logger.info(f"  {label}: no overlapping data, skipping")
+        return -1
+
+    nw_dates = set(nw["pub_date"].unique().to_list())
+    rp_dates = set(rp["date"].unique().to_list())
+    overlap_dates = sorted(nw_dates & rp_dates)
+
+    if not overlap_dates:
+        logger.info(f"  {label}: no overlapping dates, skipping")
+        return -1
+
+    all_rows = []
+    for d in overlap_dates:
+        nw_day = nw.filter(pl.col("pub_date") == d)
+        rp_day = rp.filter(pl.col("date") == d)
+        rows = _match_day(nw_day, rp_day, d, min_score)
+        all_rows.extend(rows)
+
+    if all_rows:
+        df = pl.DataFrame(all_rows, schema=CROSSWALK_SCHEMA)
+    else:
+        df = pl.DataFrame(schema=CROSSWALK_SCHEMA)
+
+    chunk_path.parent.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(chunk_path)
+    return len(df)
+
+
+# ---------------------------------------------------------------------------
+# Main crosswalk builder (legacy, kept for programmatic use)
 # ---------------------------------------------------------------------------
 
 
@@ -196,22 +349,113 @@ def build_crosswalk(nw, rp, min_score=DEFAULT_MIN_SCORE):
 
     if not all_rows:
         logger.warning("No matches found above threshold")
-        return pl.DataFrame(
-            schema={
-                "date": pl.Date,
-                "nw_source_url": pl.Utf8,
-                "nw_headline": pl.Utf8,
-                "nw_source": pl.Utf8,
-                "rp_story_id": pl.Utf8,
-                "rp_entity_id": pl.Utf8,
-                "rp_entity_name": pl.Utf8,
-                "rp_headline": pl.Utf8,
-                "rp_source_name": pl.Utf8,
-                "fuzzy_score": pl.Float64,
-            }
-        )
+        return pl.DataFrame(schema=CROSSWALK_SCHEMA)
 
     return pl.DataFrame(all_rows)
+
+
+# ---------------------------------------------------------------------------
+# Chunked crosswalk builder
+# ---------------------------------------------------------------------------
+
+
+def build_crosswalk_chunked(
+    min_score=DEFAULT_MIN_SCORE,
+    chunks_dir=DEFAULT_CHUNKS_DIR,
+    start_month=None,
+    end_month=None,
+    resume=False,
+    data_dir=DATA_DIR,
+):
+    """Build the crosswalk month-by-month, writing chunks to disk.
+
+    Parameters
+    ----------
+    min_score : float
+        Minimum fuzzy score to keep.
+    chunks_dir : Path
+        Directory for monthly chunk files.
+    start_month : tuple or None
+        (year, month) to start from (inclusive).
+    end_month : tuple or None
+        (year, month) to end at (inclusive).
+    resume : bool
+        If True, skip months whose chunk file already exists.
+    data_dir : Path
+        Base data directory.
+
+    Returns
+    -------
+    int
+        Total number of match rows across all months.
+    """
+    chunks_dir = Path(chunks_dir)
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Discovering available months...")
+    months = _discover_months(data_dir)
+    logger.info(f"  Found {len(months)} months with data in both sources")
+
+    if start_month:
+        months = [m for m in months if m >= start_month]
+    if end_month:
+        months = [m for m in months if m <= end_month]
+
+    logger.info(f"  Processing {len(months)} months")
+    if months:
+        logger.info(
+            f"  Range: {months[0][0]:04d}-{months[0][1]:02d} "
+            f"to {months[-1][0]:04d}-{months[-1][1]:02d}"
+        )
+
+    total_rows = 0
+    t0 = time.time()
+
+    for i, (year, month) in enumerate(months):
+        label = f"{year:04d}-{month:02d}"
+        chunk_path = chunks_dir / f"{label}.parquet"
+
+        if resume and chunk_path.exists():
+            n = len(pl.read_parquet(chunk_path))
+            logger.info(f"[{i + 1}/{len(months)}] {label}: already done ({n:,} rows), skipping")
+            total_rows += n
+            continue
+
+        logger.info(f"[{i + 1}/{len(months)}] {label}: matching...")
+        n = _build_month(year, month, min_score, chunks_dir, data_dir)
+        if n >= 0:
+            total_rows += n
+            elapsed = time.time() - t0
+            logger.info(
+                f"  {label}: {n:,} matches ({total_rows:,} total, {elapsed:.0f}s elapsed)"
+            )
+
+    logger.info(f"Done: {total_rows:,} total matches across {len(months)} months")
+    return total_rows
+
+
+def combine_chunks(chunks_dir=DEFAULT_CHUNKS_DIR, output_path=DEFAULT_OUTPUT):
+    """Combine all monthly chunk parquets into a single crosswalk file.
+
+    Returns the combined DataFrame.
+    """
+    chunks_dir = Path(chunks_dir)
+    output_path = Path(output_path)
+
+    chunk_files = sorted(chunks_dir.glob("*.parquet"))
+    if not chunk_files:
+        logger.warning(f"No chunk files found in {chunks_dir}")
+        return pl.DataFrame(schema=CROSSWALK_SCHEMA)
+
+    logger.info(f"Combining {len(chunk_files)} chunk files...")
+    dfs = [pl.read_parquet(f) for f in chunk_files]
+    combined = pl.concat(dfs).sort("date", "nw_source_url")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.write_parquet(output_path)
+    logger.info(f"Saved {len(combined):,} rows to {output_path}")
+
+    return combined
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +510,44 @@ def _print_status(output_path):
         print(f"    {row['rp_source_name']}: {row['n']:,}", flush=True)
 
 
+def _print_chunks_status(chunks_dir):
+    """Print summary of completed monthly chunks."""
+    chunks_dir = Path(chunks_dir)
+    if not chunks_dir.exists():
+        print(f"No chunks directory at {chunks_dir}")
+        return
+
+    chunk_files = sorted(chunks_dir.glob("*.parquet"))
+    if not chunk_files:
+        print(f"No chunk files in {chunks_dir}")
+        return
+
+    total = 0
+    print(f"Chunks directory: {chunks_dir}")
+    print(f"  Completed months: {len(chunk_files)}")
+    for f in chunk_files:
+        n = len(pl.read_parquet(f))
+        total += n
+        print(f"    {f.stem}: {n:,} rows")
+    print(f"  Total rows: {total:,}")
+
+
+# ---------------------------------------------------------------------------
+# CLI helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_month(s):
+    """Parse 'YYYY-MM' string into (year, month) tuple."""
+    try:
+        parts = s.split("-")
+        year, month = int(parts[0]), int(parts[1])
+        datetime.date(year, month, 1)  # validate
+        return (year, month)
+    except (ValueError, IndexError):
+        raise argparse.ArgumentTypeError(f"Invalid month format: {s!r} (expected YYYY-MM)")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -276,9 +558,13 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python create_newswire_ravenpack_crosswalk.py                    # default run\n"
+            "  python create_newswire_ravenpack_crosswalk.py                    # full rebuild\n"
+            "  python create_newswire_ravenpack_crosswalk.py --resume           # skip done months\n"
+            "  python create_newswire_ravenpack_crosswalk.py --start-month 2024-01 --end-month 2024-03\n"
+            "  python create_newswire_ravenpack_crosswalk.py --combine-only     # merge chunks\n"
             "  python create_newswire_ravenpack_crosswalk.py --min-score 85     # stricter threshold\n"
             "  python create_newswire_ravenpack_crosswalk.py --status           # show existing stats\n"
+            "  python create_newswire_ravenpack_crosswalk.py --chunks-status    # show chunk progress\n"
         ),
     )
     parser.add_argument(
@@ -294,22 +580,62 @@ if __name__ == "__main__":
         help=f"Output parquet path (default: {DEFAULT_OUTPUT}).",
     )
     parser.add_argument(
+        "--chunks-dir",
+        type=str,
+        default=None,
+        help=f"Directory for monthly chunk files (default: {DEFAULT_CHUNKS_DIR}).",
+    )
+    parser.add_argument(
+        "--start-month",
+        type=_parse_month,
+        default=None,
+        help="First month to process, inclusive (YYYY-MM).",
+    )
+    parser.add_argument(
+        "--end-month",
+        type=_parse_month,
+        default=None,
+        help="Last month to process, inclusive (YYYY-MM).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip months that already have a chunk file on disk.",
+    )
+    parser.add_argument(
+        "--combine-only",
+        action="store_true",
+        help="Only combine existing chunk files into the output (no matching).",
+    )
+    parser.add_argument(
         "--status",
         action="store_true",
         help="Print summary of existing crosswalk and exit.",
     )
+    parser.add_argument(
+        "--chunks-status",
+        action="store_true",
+        help="Print summary of completed monthly chunks and exit.",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output) if args.output else DEFAULT_OUTPUT
+    chunks_dir = Path(args.chunks_dir) if args.chunks_dir else DEFAULT_CHUNKS_DIR
 
     if args.status:
         _print_status(output_path)
+    elif args.chunks_status:
+        _print_chunks_status(chunks_dir)
+    elif args.combine_only:
+        combine_chunks(chunks_dir, output_path)
+        _print_status(output_path)
     else:
-        nw, rp = _load_data()
-        crosswalk = build_crosswalk(nw, rp, min_score=args.min_score)
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        crosswalk.write_parquet(output_path)
-        logger.info(f"Saved {len(crosswalk):,} rows to {output_path}")
-
+        build_crosswalk_chunked(
+            min_score=args.min_score,
+            chunks_dir=chunks_dir,
+            start_month=args.start_month,
+            end_month=args.end_month,
+            resume=args.resume,
+        )
+        combine_chunks(chunks_dir, output_path)
         _print_status(output_path)

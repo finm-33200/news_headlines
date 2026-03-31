@@ -210,6 +210,8 @@ def task_create_crosswalk():
         "doc": "Fuzzy-match newswire headlines to RavenPack",
         "actions": [
             "python ./src/settings.py",
+            # Full rebuild: source coverage can expand over time (e.g. Business Wire),
+            # so resume-only chunk reuse can silently omit newly added sources.
             "python ./src/create_newswire_ravenpack_crosswalk.py",
         ],
         "targets": [DATA_DIR / "newswire_ravenpack_crosswalk.parquet"],
