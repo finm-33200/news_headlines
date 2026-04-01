@@ -51,13 +51,19 @@ from pull_gdelt_sp500_headlines import (
 from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
-GCP_PROJECT = config("GCP_PROJECT", default=None)
+try:
+    GCP_PROJECT = config("GCP_PROJECT")
+except ValueError:
+    GCP_PROJECT = None
 _HAS_BQ = GCP_PROJECT is not None
 
 if _HAS_BQ:
-    from google.cloud import bigquery
+    try:
+        from google.cloud import bigquery
 
-    client = bigquery.Client(project=GCP_PROJECT)
+        client = bigquery.Client(project=GCP_PROJECT)
+    except Exception:
+        _HAS_BQ = False
 
 # Derive date range from the sample month
 _sm_dt = datetime.strptime(SAMPLE_MONTH, "%Y-%m").date()

@@ -42,7 +42,10 @@ from google.cloud import bigquery
 from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
-GCP_PROJECT = config("GCP_PROJECT", default=None)
+try:
+    GCP_PROJECT = config("GCP_PROJECT")
+except ValueError:
+    GCP_PROJECT = None
 
 SAMPLE_MONTH = "2025-01"
 
