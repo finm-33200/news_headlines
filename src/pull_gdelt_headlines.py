@@ -1,10 +1,10 @@
 """
-Pull GDELT GKG headlines filtered to S&P 500 companies via BigQuery.
+Pull GDELT GKG headlines via BigQuery.
 
-Uploads a normalized S&P 500 company names lookup table to BigQuery,
-then JOINs it server-side against GDELT's V2Organizations field. This
-filters ~436K global headlines/day down to only those mentioning S&P 500
-companies, dramatically reducing data transfer.
+Pulls all English-language GDELT articles that mention at least one
+organization and contain a page title. No company-level filtering is
+applied here — downstream tasks (e.g. the RavenPack crosswalk) handle
+matching to specific universes like the S&P 500.
 
 Three modes:
   Default    — pull a single sample month into the data lake directory
@@ -12,14 +12,14 @@ Three modes:
   --estimate — estimate cost and time for the full pull
 
 The data lake uses Hive-style partitioning:
-  DATA_DIR/gdelt_sp500_headlines/year=YYYY/month=MM/data.parquet
+  DATA_DIR/gdelt_headlines/year=YYYY/month=MM/data.parquet
 
 Months already on disk are skipped, so interrupted runs resume where
 they left off. Polars auto-detects the Hive partition columns (year,
 month) when scanning the directory.
 
 Loader functions:
-  load_gdelt_sp500_headlines()  — LazyFrame scanning the Hive-partitioned data lake
+  load_gdelt_headlines()        — LazyFrame scanning the Hive-partitioned data lake
   filter_to_month(lf, month)    — filter using Hive partition columns (year, month)
 
 Prerequisites:
@@ -27,7 +27,6 @@ Prerequisites:
 - A GCP project with BigQuery API enabled
 - Authentication via: gcloud auth application-default login
 - GCP_PROJECT set in .env
-- sp500_names_lookup.parquet already built (run pull_sp500_constituents.py first)
 """
 
 import argparse
@@ -51,7 +50,7 @@ SAMPLE_MONTH = "2025-01"
 
 GDELT_FULL_START = "2015-02-01"
 
-GDELT_SP500_DIR = DATA_DIR / "gdelt_sp500_headlines"
+GDELT_DIR = DATA_DIR / "gdelt_headlines"
 
 
 def _extract_page_title(extras: str | None) -> str | None:
@@ -117,112 +116,44 @@ def _hive_partition_path(output_dir: Path, month_start: str) -> Path:
     return output_dir / f"year={year}" / f"month={month}" / "data.parquet"
 
 
-def _upload_names_lookup(client: bigquery.Client, project: str) -> str:
-    """Upload the S&P 500 names lookup table to BigQuery.
-
-    Creates the dataset if needed. Returns the fully qualified table ID.
-    """
-    dataset_id = f"{project}.news_headlines"
-    dataset = bigquery.Dataset(dataset_id)
-    dataset.location = "US"
-    client.create_dataset(dataset, exists_ok=True)
-
-    table_id = f"{dataset_id}.sp500_names_lookup"
-
-    lookup_path = DATA_DIR / "sp500_names_lookup.parquet"
-    if not lookup_path.exists():
-        raise FileNotFoundError(
-            f"{lookup_path} not found. Run pull_sp500_constituents.py first."
-        )
-
-    import pandas as pd
-
-    lookup_df = pd.read_parquet(lookup_path)
-    print(f"Uploading {len(lookup_df):,} rows to {table_id}...")
-
-    job_config = bigquery.LoadJobConfig(
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-    )
-    job = client.load_table_from_dataframe(lookup_df, table_id, job_config=job_config)
-    job.result()
-
-    print(f"  Upload complete: {table_id}")
-    return table_id
-
-
-def _build_query(month_start: str, month_end: str, project: str) -> str:
-    """Build the BigQuery SQL that joins GDELT against S&P 500 names.
+def _build_query(month_start: str, month_end: str) -> str:
+    """Build the BigQuery SQL to pull GDELT headlines for one month.
 
     The query:
     1. Filters to English articles (TranslationInfo IS NULL)
-    2. UNNESTs V2Organizations to get individual org entries
-    3. Strips trailing char offset from each org entry
-    4. Normalizes both sides (lowercase, strip punctuation/suffixes)
-    5. INNER JOINs against the uploaded lookup table on comnam_norm
+    2. Requires a <PAGE_TITLE> tag in Extras (used as headline)
+    3. Requires at least one organization mention
+    4. Returns one row per article (no UNNEST of organizations)
     """
     return f"""
-    WITH orgs AS (
-        SELECT
-            PARSE_TIMESTAMP('%E4Y%m%d%H%M%S', CAST(DATE AS STRING)) AS gkg_date,
-            DocumentIdentifier AS source_url,
-            SourceCommonName AS source_name,
-            Extras,
-            V2Tone,
-            V2Organizations,
-            REGEXP_REPLACE(org_entry, r',\\d+$', '') AS org_name
-        FROM `gdelt-bq.gdeltv2.gkg_partitioned`,
-            UNNEST(SPLIT(V2Organizations, ';')) AS org_entry
-        WHERE _PARTITIONTIME >= TIMESTAMP('{month_start}')
-          AND _PARTITIONTIME < TIMESTAMP('{month_end}')
-          AND Extras LIKE '%<PAGE_TITLE>%'
-          AND TranslationInfo IS NULL
-          AND V2Organizations IS NOT NULL
-          AND V2Organizations != ''
-    ),
-    orgs_norm AS (
-        SELECT *,
-            REGEXP_REPLACE(
-                REGEXP_REPLACE(
-                    REGEXP_REPLACE(
-                        LOWER(org_name),
-                        r"[&.',]", ' '
-                    ),
-                    r'\\b(inc|corp|corporation|co|company|ltd|limited|llc|lp|plc|group|holdings|holding|enterprises|enterprise|intl|international|technologies|technology|systems|industries|services|bancorp|bancshares|financial)\\b',
-                    ' '
-                ),
-                r'\\s+', ' '
-            ) AS org_name_norm
-        FROM orgs
-    )
     SELECT DISTINCT
-        o.gkg_date,
-        o.source_url,
-        o.source_name,
-        o.Extras,
-        o.V2Tone,
-        o.V2Organizations,
-        TRIM(o.org_name) AS matched_org_raw,
-        s.comnam AS matched_company,
-        s.permno,
-        s.ticker
-    FROM orgs_norm o
-    INNER JOIN `{project}.news_headlines.sp500_names_lookup` s
-        ON TRIM(o.org_name_norm) = s.comnam_norm
+        PARSE_TIMESTAMP('%E4Y%m%d%H%M%S', CAST(DATE AS STRING)) AS gkg_date,
+        DocumentIdentifier AS source_url,
+        SourceCommonName AS source_name,
+        Extras,
+        V2Tone,
+        V2Organizations
+    FROM `gdelt-bq.gdeltv2.gkg_partitioned`
+    WHERE _PARTITIONTIME >= TIMESTAMP('{month_start}')
+      AND _PARTITIONTIME < TIMESTAMP('{month_end}')
+      AND Extras LIKE '%<PAGE_TITLE>%'
+      AND TranslationInfo IS NULL
+      AND V2Organizations IS NOT NULL
+      AND V2Organizations != ''
     """
 
 
-def _pull_and_clean_sp500_month(
+def _pull_and_clean_month(
     client: bigquery.Client,
     month_start: str,
     month_end: str,
-    project: str,
     output_dir: Path,
 ) -> tuple[int, int]:
-    """Query BigQuery for one month of S&P 500-filtered headlines.
+    """Query BigQuery for one month of GDELT headlines.
 
     Returns (number of cleaned rows written, bytes processed).
     """
-    query = _build_query(month_start, month_end, project)
+    query = _build_query(month_start, month_end)
 
     job = client.query(query)
     rows = job.result()
@@ -249,18 +180,17 @@ def _pull_and_clean_sp500_month(
     return len(df), bytes_processed
 
 
-def pull_gdelt_sp500_sample(
+def pull_gdelt_sample(
     month=SAMPLE_MONTH,
     project=GCP_PROJECT,
     output_dir=None,
 ):
     """Pull a single month of GDELT headlines into the data lake directory.
 
-    Writes to output_dir/YYYY-MM.parquet using the same format as the
-    full pull. Returns the number of rows written.
+    Returns the number of rows written.
     """
     if output_dir is None:
-        output_dir = GDELT_SP500_DIR
+        output_dir = GDELT_DIR
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -273,15 +203,11 @@ def pull_gdelt_sp500_sample(
 
     client = bigquery.Client(project=project)
 
-    print("Uploading S&P 500 names lookup to BigQuery...")
-    _upload_names_lookup(client, project)
-
-    print(f"Querying GDELT S&P 500 for {month} ({month_start} to {month_end})...")
-    n_rows, _ = _pull_and_clean_sp500_month(
+    print(f"Querying GDELT for {month} ({month_start} to {month_end})...")
+    n_rows, _ = _pull_and_clean_month(
         client,
         month_start,
         month_end,
-        project,
         output_dir,
     )
     print(f"  Headlines after cleaning: {n_rows:,}")
@@ -289,13 +215,13 @@ def pull_gdelt_sp500_sample(
     return n_rows
 
 
-def pull_gdelt_sp500_full(
+def pull_gdelt_full(
     start_date=GDELT_FULL_START,
     end_date=None,
     project=GCP_PROJECT,
     output_dir=None,
 ):
-    """Pull the full GDELT headline dataset filtered to S&P 500 companies.
+    """Pull the full GDELT headline dataset (all org-mentioning articles).
 
     Each month is cleaned and written as a separate parquet file. Months
     already on disk are skipped for resumability.
@@ -303,24 +229,18 @@ def pull_gdelt_sp500_full(
     if end_date is None:
         end_date = date.today().strftime("%Y-%m-%d")
     if output_dir is None:
-        output_dir = GDELT_SP500_DIR
+        output_dir = GDELT_DIR
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     month_ranges = list(_generate_month_ranges(start_date, end_date))
     total_months = len(month_ranges)
 
-    print(
-        f"Full GDELT S&P 500 pull: {start_date} to {end_date} ({total_months} months)"
-    )
+    print(f"Full GDELT pull: {start_date} to {end_date} ({total_months} months)")
     print("Completed months are skipped on re-run.")
     print(f"Output directory: {output_dir}\n")
 
     client = bigquery.Client(project=project)
-
-    print("Uploading S&P 500 names lookup to BigQuery...")
-    _upload_names_lookup(client, project)
-    print()
 
     for i, (m_start, m_end) in enumerate(month_ranges, 1):
         out_path = _hive_partition_path(output_dir, m_start)
@@ -329,8 +249,8 @@ def pull_gdelt_sp500_full(
             continue
 
         print(f"  [{i}/{total_months}] {m_start[:7]}: querying BigQuery...", end="")
-        n_rows, _ = _pull_and_clean_sp500_month(
-            client, m_start, m_end, project, output_dir
+        n_rows, _ = _pull_and_clean_month(
+            client, m_start, m_end, output_dir
         )
         print(f" {n_rows:,} rows")
 
@@ -342,7 +262,7 @@ def estimate_full_pull(
     end_date=None,
     project=GCP_PROJECT,
 ):
-    """Estimate cost and time for a full GDELT S&P 500 pull.
+    """Estimate cost and time for a full GDELT pull.
 
     Runs 2 test months (one early, one recent), measures wall-clock time
     and bytes processed, then extrapolates to the full date range.
@@ -359,9 +279,6 @@ def estimate_full_pull(
 
     client = bigquery.Client(project=project)
 
-    print("Uploading S&P 500 names lookup to BigQuery...")
-    _upload_names_lookup(client, project)
-
     print(f"\nEstimating full pull: {start_date} to {end_date} ({total_months} months)")
     print("Running 2 test queries (dry run disabled — actual queries)...\n")
 
@@ -369,7 +286,7 @@ def estimate_full_pull(
     total_bytes = 0
 
     for m_start, m_end in test_months:
-        query = _build_query(m_start, m_end, project)
+        query = _build_query(m_start, m_end)
         print(f"  Test month {m_start[:7]}...", end="", flush=True)
         t0 = time.time()
         job = client.query(query)
@@ -410,14 +327,15 @@ def filter_to_month(lf: pl.LazyFrame, ym: str) -> pl.LazyFrame:
     return lf.filter((pl.col("year") == int(year)) & (pl.col("month") == int(month)))
 
 
-def load_gdelt_sp500_headlines(data_dir=DATA_DIR):
-    """Lazy-scan the Hive-partitioned GDELT S&P 500 headlines directory."""
-    return pl.scan_parquet(Path(data_dir) / "gdelt_sp500_headlines")
+def load_gdelt_headlines(data_dir=DATA_DIR):
+    """Lazy-scan the Hive-partitioned GDELT headlines directory."""
+    return pl.scan_parquet(Path(data_dir) / "gdelt_headlines")
+
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Pull GDELT GKG headlines filtered to S&P 500 companies."
+        description="Pull GDELT GKG headlines via BigQuery."
     )
     parser.add_argument(
         "--full",
@@ -444,6 +362,6 @@ if __name__ == "__main__":
     if args.estimate:
         estimate_full_pull()
     elif args.full:
-        pull_gdelt_sp500_full()
+        pull_gdelt_full()
     else:
-        pull_gdelt_sp500_sample(month=args.month)
+        pull_gdelt_sample(month=args.month)
