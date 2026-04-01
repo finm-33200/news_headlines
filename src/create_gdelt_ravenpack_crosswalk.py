@@ -109,7 +109,9 @@ def _match_day(gdelt_day, rp_day, date_val, min_score):
     gdelt_norms = [normalize_headline(h) for h in gdelt_headlines]
     rp_norms = [normalize_headline(h) for h in rp_headlines]
 
-    scores = process.cdist(gdelt_norms, rp_norms, scorer=fuzz.token_sort_ratio, workers=-1)
+    scores = process.cdist(
+        gdelt_norms, rp_norms, scorer=fuzz.token_sort_ratio, workers=-1
+    )
     best_idx = np.argmax(scores, axis=1)
     best_scores = scores[np.arange(len(gdelt_norms)), best_idx]
 

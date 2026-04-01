@@ -40,8 +40,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pl
+
 from pull_gdelt_headlines import (
-    GDELT_DIR,
     SAMPLE_MONTH,
     filter_to_month,
     load_gdelt_headlines,
@@ -115,22 +115,24 @@ _rp_total_stories = _rp_full.select(pl.col("rp_story_id").n_unique()).collect().
 _rp_matched_stories = _cw["rp_story_id"].n_unique()
 _rp_match_rate = _rp_matched_stories / _rp_total_stories * 100
 
-pl.DataFrame({
-    "metric": [
-        "RP headlines matched",
-        "NW headlines matched",
-        "GDELT match rate",
-        "Crosswalk pairs",
-        "Date range",
-    ],
-    "value": [
-        f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
-        f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
-        "~7% (different source ecosystems)",
-        f"{len(_cw):,}",
-        f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
-    ],
-})
+pl.DataFrame(
+    {
+        "metric": [
+            "RP headlines matched",
+            "NW headlines matched",
+            "GDELT match rate",
+            "Crosswalk pairs",
+            "Date range",
+        ],
+        "value": [
+            f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
+            f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
+            "~7% (different source ecosystems)",
+            f"{len(_cw):,}",
+            f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
+        ],
+    }
+)
 
 # %% [markdown]
 # ### Short normalized names — high false-positive risk
@@ -413,7 +415,9 @@ print(f"Total rows in data lake: {len(df_full):,}")
 
 # %%
 monthly = (
-    df_full.with_columns(pl.col("gkg_date").cast(pl.Date).dt.truncate("1mo").alias("month"))
+    df_full.with_columns(
+        pl.col("gkg_date").cast(pl.Date).dt.truncate("1mo").alias("month")
+    )
     .group_by("month")
     .agg(pl.len().alias("n_headlines"))
     .sort("month")
@@ -490,19 +494,21 @@ plt.show()
 # ## Bottom Line
 
 # %%
-pl.DataFrame({
-    "metric": [
-        "RP headlines matched",
-        "NW headlines matched",
-        "GDELT match rate",
-        "Crosswalk pairs",
-        "Date range",
-    ],
-    "value": [
-        f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
-        f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
-        "~7% (different source ecosystems)",
-        f"{len(_cw):,}",
-        f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
-    ],
-})
+pl.DataFrame(
+    {
+        "metric": [
+            "RP headlines matched",
+            "NW headlines matched",
+            "GDELT match rate",
+            "Crosswalk pairs",
+            "Date range",
+        ],
+        "value": [
+            f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
+            f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
+            "~7% (different source ecosystems)",
+            f"{len(_cw):,}",
+            f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
+        ],
+    }
+)

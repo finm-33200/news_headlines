@@ -54,7 +54,9 @@ def _open_ravenpack(data_dir):
     path = data_dir / "ravenpack_djpr.parquet"
     logger.info(f"Opening RavenPack from {path}")
     pf = pq.ParquetFile(path)
-    logger.info(f"  {pf.metadata.num_rows:,} rows, {pf.metadata.num_row_groups} row groups")
+    logger.info(
+        f"  {pf.metadata.num_rows:,} rows, {pf.metadata.num_row_groups} row groups"
+    )
     return pf
 
 

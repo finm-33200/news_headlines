@@ -52,6 +52,7 @@ from pathlib import Path
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import polars as pl
+
 from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
@@ -90,20 +91,22 @@ _rp_total_stories = _rp_full.select(pl.col("rp_story_id").n_unique()).collect().
 _rp_matched_stories = _cw["rp_story_id"].n_unique()
 _rp_match_rate = _rp_matched_stories / _rp_total_stories * 100
 
-pl.DataFrame({
-    "metric": [
-        "RP headlines matched",
-        "NW headlines matched",
-        "Crosswalk pairs",
-        "Date range",
-    ],
-    "value": [
-        f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
-        f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
-        f"{len(_cw):,}",
-        f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
-    ],
-})
+pl.DataFrame(
+    {
+        "metric": [
+            "RP headlines matched",
+            "NW headlines matched",
+            "Crosswalk pairs",
+            "Date range",
+        ],
+        "value": [
+            f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
+            f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
+            f"{len(_cw):,}",
+            f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
+        ],
+    }
+)
 
 # %% [markdown]
 # ---
@@ -466,7 +469,9 @@ print(
 )
 
 fig, ax = plt.subplots(figsize=(8, 3))
-ax.hist(cw_collected["fuzzy_score"].to_list(), bins=40, color="mediumseagreen", alpha=0.8)
+ax.hist(
+    cw_collected["fuzzy_score"].to_list(), bins=40, color="mediumseagreen", alpha=0.8
+)
 ax.set_xlabel("Fuzzy score")
 ax.set_ylabel("Count")
 ax.set_title("Newswire–RavenPack crosswalk — fuzzy-score distribution")
@@ -513,17 +518,19 @@ plt.show()
 # ## Bottom Line
 
 # %%
-pl.DataFrame({
-    "metric": [
-        "RP headlines matched",
-        "NW headlines matched",
-        "Crosswalk pairs",
-        "Date range",
-    ],
-    "value": [
-        f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
-        f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
-        f"{len(_cw):,}",
-        f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
-    ],
-})
+pl.DataFrame(
+    {
+        "metric": [
+            "RP headlines matched",
+            "NW headlines matched",
+            "Crosswalk pairs",
+            "Date range",
+        ],
+        "value": [
+            f"{_rp_match_rate:.1f}% ({_rp_matched_stories:,} / {_rp_total_stories:,})",
+            f"{_nw_match_rate:.1f}% ({_nw_matched_urls:,} / {_nw_total_urls:,})",
+            f"{len(_cw):,}",
+            f"{_cw['date'].min()} to {_cw['date'].max()} ({_cw['date'].n_unique():,} dates)",
+        ],
+    }
+)

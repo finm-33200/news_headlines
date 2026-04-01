@@ -85,7 +85,11 @@ def _stream_download(url: str, dest: Path, label: str) -> None:
             mb = downloaded / (1024 * 1024)
             if total:
                 pct = downloaded / total * 100
-                print(f"\r  {mb:,.0f} MB / {total / 1024 / 1024:,.0f} MB ({pct:.0f}%)", end="", flush=True)
+                print(
+                    f"\r  {mb:,.0f} MB / {total / 1024 / 1024:,.0f} MB ({pct:.0f}%)",
+                    end="",
+                    flush=True,
+                )
             else:
                 print(f"\r  {mb:,.0f} MB downloaded", end="", flush=True)
     print()  # newline after progress
@@ -119,9 +123,7 @@ def _download_from_gdrive(dest: Path) -> None:
             "ensure curl is on your PATH."
         )
     print("Downloading cached scrapes from Google Drive (curl)...")
-    gdrive_url = (
-        f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
-    )
+    gdrive_url = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
     result = subprocess.run(
         [curl, "-L", "-o", str(dest), gdrive_url],
         check=True,
@@ -162,7 +164,8 @@ def _extract_zip(zip_path: Path, data_dir: Path) -> None:
         # The ZIP may wrap contents in a single top-level directory.
         # Ignore macOS resource fork directories and hidden files.
         top_level = [
-            p for p in tmpdir.iterdir()
+            p
+            for p in tmpdir.iterdir()
             if not p.name.startswith(".") and p.name != "__MACOSX"
         ]
         if len(top_level) == 1 and top_level[0].is_dir():
@@ -224,14 +227,21 @@ def download_cached_scrapes(data_dir: Path = None, force: bool = False) -> None:
         print("\nCached scrapes downloaded and extracted successfully.")
     else:
         missing = [n for n in EXPECTED_DIRS if not (data_dir / n).is_dir()]
-        print(f"\nWARNING: Missing directories after extraction: {missing}", file=sys.stderr)
+        print(
+            f"\nWARNING: Missing directories after extraction: {missing}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--force", action="store_true", help="Re-download even if data exists")
-    parser.add_argument("--status", action="store_true", help="Show what cached data is present")
+    parser.add_argument(
+        "--force", action="store_true", help="Re-download even if data exists"
+    )
+    parser.add_argument(
+        "--status", action="store_true", help="Show what cached data is present"
+    )
     args = parser.parse_args()
 
     if args.status:

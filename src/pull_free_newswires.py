@@ -704,7 +704,7 @@ class NewswireCaScraper:
         idx = url.lower().find("/news-releases/")
         if idx < 0:
             return None
-        slug = url[idx + len("/news-releases/"):]
+        slug = url[idx + len("/news-releases/") :]
         slug = slug.split("?", 1)[0].split("#", 1)[0]
         # Strip .html extension
         if slug.endswith(".html"):
@@ -793,7 +793,9 @@ class NewswireCaScraper:
             if lastmod is not None and lastmod.text:
                 pub_date = lastmod.text[:10]
             if pub_date:
-                entries.append({"headline": headline, "source_url": url, "date": pub_date})
+                entries.append(
+                    {"headline": headline, "source_url": url, "date": pub_date}
+                )
         return entries
 
     def sitemap_urls_for_month(self, year, month):

@@ -65,7 +65,9 @@ def print_status(data_dir: Path) -> None:
 
     for key in sorted(sources):
         print(f"  {key}  — {sources[key]} parquet file(s)")
-    print(f"\n  Total: {len(files)} files, {total_bytes / 1024 / 1024:.1f} MB uncompressed")
+    print(
+        f"\n  Total: {len(files)} files, {total_bytes / 1024 / 1024:.1f} MB uncompressed"
+    )
 
 
 def create_cache(data_dir: Path, output_path: Path) -> Path:

@@ -111,9 +111,7 @@ def _load_month_data(year, month, data_dir=DATA_DIR):
     rp = (
         pl.scan_parquet(data_dir / "ravenpack_djpr.parquet")
         .with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
-        .filter(
-            (pl.col("date") >= month_start) & (pl.col("date") < month_end)
-        )
+        .filter((pl.col("date") >= month_start) & (pl.col("date") < month_end))
         .filter(
             pl.col("headline").is_not_null()
             & (pl.col("headline").str.strip_chars() != "")
@@ -142,10 +140,7 @@ def _discover_months(data_dir=DATA_DIR):
     """
     # Newswire months from Hive partition columns
     nw_months = (
-        load_newswire_headlines(data_dir)
-        .select("year", "month")
-        .unique()
-        .collect()
+        load_newswire_headlines(data_dir).select("year", "month").unique().collect()
     )
     nw_set = set(zip(nw_months["year"].to_list(), nw_months["month"].to_list()))
 
@@ -417,7 +412,9 @@ def build_crosswalk_chunked(
 
         if resume and chunk_path.exists():
             n = len(pl.read_parquet(chunk_path))
-            logger.info(f"[{i + 1}/{len(months)}] {label}: already done ({n:,} rows), skipping")
+            logger.info(
+                f"[{i + 1}/{len(months)}] {label}: already done ({n:,} rows), skipping"
+            )
             total_rows += n
             continue
 
@@ -545,7 +542,9 @@ def _parse_month(s):
         datetime.date(year, month, 1)  # validate
         return (year, month)
     except (ValueError, IndexError):
-        raise argparse.ArgumentTypeError(f"Invalid month format: {s!r} (expected YYYY-MM)")
+        raise argparse.ArgumentTypeError(
+            f"Invalid month format: {s!r} (expected YYYY-MM)"
+        )
 
 
 # ---------------------------------------------------------------------------

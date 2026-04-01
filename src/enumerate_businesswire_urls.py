@@ -119,7 +119,9 @@ def _query_cdx_for_date(date_str, session):
             )
             time.sleep(2**attempt)
         except requests.RequestException as e:
-            logger.warning(f"CDX network error for {date_str} (attempt {attempt + 1}): {e}")
+            logger.warning(
+                f"CDX network error for {date_str} (attempt {attempt + 1}): {e}"
+            )
             time.sleep(2**attempt)
     logger.error(f"CDX failed after {MAX_RETRIES} retries for {date_str}")
     return []
@@ -135,6 +137,7 @@ def _headline_from_slug(slug):
         return None
     # URL-decode percent-encoded characters (e.g. %E2%80%99 → ')
     from urllib.parse import unquote
+
     text = unquote(slug).replace("-", " ").strip()
     return text.title() if text else None
 
@@ -228,9 +231,8 @@ def _inventory_spot_check(df, sample_size=5):
 
     slug_mask = pl.Series([False] * total_urls)
     if "headline_from_slug" in df.columns:
-        slug_mask = (
-            df["headline_from_slug"].is_not_null()
-            & (df["headline_from_slug"].str.strip_chars().str.len_chars() > 0)
+        slug_mask = df["headline_from_slug"].is_not_null() & (
+            df["headline_from_slug"].str.strip_chars().str.len_chars() > 0
         )
 
     slug_df = df.filter(slug_mask).select(["source_url", "headline_from_slug"])
@@ -244,7 +246,9 @@ def _inventory_spot_check(df, sample_size=5):
         "missing_slug_count": missing_slug_count,
         "slug_coverage_pct": 100.0 * slug_headline_count / total_urls,
         "slug_samples": slug_df.head(sample_size).to_dicts(),
-        "missing_slug_samples": missing_slug_df.head(sample_size)["source_url"].to_list(),
+        "missing_slug_samples": missing_slug_df.head(sample_size)[
+            "source_url"
+        ].to_list(),
     }
 
 
@@ -269,9 +273,8 @@ def _inventory_file_summary(df):
             "missing_slug_count": total_urls,
         }
 
-    slug_mask = (
-        df["headline_from_slug"].is_not_null()
-        & (df["headline_from_slug"].str.strip_chars().str.len_chars() > 0)
+    slug_mask = df["headline_from_slug"].is_not_null() & (
+        df["headline_from_slug"].str.strip_chars().str.len_chars() > 0
     )
     slug_headline_count = int(slug_mask.sum())
     return {
@@ -467,7 +470,9 @@ def enumerate_urls(start_date, end_date, force=False):
                 )
                 df.write_parquet(out_path)
                 if current.weekday() < 5:  # Warn only on weekdays
-                    logger.info(f"[{day_num}/{total_days}] {current.isoformat()}: 0 articles")
+                    logger.info(
+                        f"[{day_num}/{total_days}] {current.isoformat()}: 0 articles"
+                    )
         except Exception as e:
             # Log and skip — do NOT write a parquet so this day will be retried
             errors.append(current.isoformat())
@@ -533,7 +538,9 @@ if __name__ == "__main__":
     )
     parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", type=str, help="End date YYYY-MM-DD (exclusive)")
-    parser.add_argument("--status", action="store_true", help="Print inventory progress")
+    parser.add_argument(
+        "--status", action="store_true", help="Print inventory progress"
+    )
     parser.add_argument(
         "--spot-check",
         type=str,

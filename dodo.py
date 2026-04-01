@@ -161,11 +161,7 @@ def task_pull():
                 "python ./src/pull_gdelt_headlines.py",
             ],
             "targets": [
-                DATA_DIR
-                / "gdelt_headlines"
-                / "year=2025"
-                / "month=01"
-                / "data.parquet"
+                DATA_DIR / "gdelt_headlines" / "year=2025" / "month=01" / "data.parquet"
             ],
             "file_dep": [
                 "./src/settings.py",
@@ -289,11 +285,7 @@ notebook_tasks = {
         "path": "./src/01_data_sources_overview_ipynb.py",
         "file_dep": [
             DATA_DIR / "ravenpack_djpr.parquet",
-            DATA_DIR
-            / "gdelt_headlines"
-            / "year=2025"
-            / "month=01"
-            / "data.parquet",
+            DATA_DIR / "gdelt_headlines" / "year=2025" / "month=01" / "data.parquet",
             DATA_DIR / "sp500_constituents.parquet",
             DATA_DIR
             / "newswire_headlines"
@@ -309,11 +301,7 @@ notebook_tasks = {
     "02_gdelt_sp500_filtering_ipynb": {
         "path": "./src/02_gdelt_sp500_filtering_ipynb.py",
         "file_dep": [
-            DATA_DIR
-            / "gdelt_headlines"
-            / "year=2025"
-            / "month=01"
-            / "data.parquet",
+            DATA_DIR / "gdelt_headlines" / "year=2025" / "month=01" / "data.parquet",
             DATA_DIR / "sp500_names_lookup.parquet",
             DATA_DIR / "ravenpack_djpr.parquet",
         ],

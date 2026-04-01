@@ -249,9 +249,7 @@ def pull_gdelt_full(
             continue
 
         print(f"  [{i}/{total_months}] {m_start[:7]}: querying BigQuery...", end="")
-        n_rows, _ = _pull_and_clean_month(
-            client, m_start, m_end, output_dir
-        )
+        n_rows, _ = _pull_and_clean_month(client, m_start, m_end, output_dir)
         print(f" {n_rows:,} rows")
 
     print(f"\nDone. Monthly parquets are in {output_dir}")
@@ -330,7 +328,6 @@ def filter_to_month(lf: pl.LazyFrame, ym: str) -> pl.LazyFrame:
 def load_gdelt_headlines(data_dir=DATA_DIR):
     """Lazy-scan the Hive-partitioned GDELT headlines directory."""
     return pl.scan_parquet(Path(data_dir) / "gdelt_headlines")
-
 
 
 if __name__ == "__main__":

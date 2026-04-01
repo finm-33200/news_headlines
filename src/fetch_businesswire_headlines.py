@@ -244,7 +244,9 @@ def _fetch_day(year, month, day):
     # Save
     out_path = _day_parquet_path(year, month, day)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    df = pl.DataFrame(headlines, schema={"headline": pl.Utf8, "source_url": pl.Utf8, "date": pl.Utf8})
+    df = pl.DataFrame(
+        headlines, schema={"headline": pl.Utf8, "source_url": pl.Utf8, "date": pl.Utf8}
+    )
     df.write_parquet(out_path)
     return len(headlines)
 
@@ -369,9 +371,7 @@ def continuous_fetch(
                 "No incomplete Business Wire days remain in range; "
                 f"sleeping {idle_sleep_seconds}s before re-checking. "
                 f"(idle recheck {idle_rechecks}"
-                + (
-                    f"/{max_idle_rechecks}" if max_idle_rechecks is not None else ""
-                )
+                + (f"/{max_idle_rechecks}" if max_idle_rechecks is not None else "")
                 + ")"
             )
             loops += 1

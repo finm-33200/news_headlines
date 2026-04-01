@@ -236,7 +236,9 @@ def _collapse_month_ranges(months):
     for range_start, range_end in ranges:
         start_str = f"{range_start[0]:04d}-{range_start[1]:02d}"
         end_str = f"{range_end[0]:04d}-{range_end[1]:02d}"
-        collapsed.append(start_str if range_start == range_end else f"{start_str}..{end_str}")
+        collapsed.append(
+            start_str if range_start == range_end else f"{start_str}..{end_str}"
+        )
     return collapsed
 
 
@@ -295,14 +297,20 @@ def validate_existing_timestamps(
         "covered_no_archive": covered_no_archive,
         "malformed_keys": malformed_keys,
         "malformed_timestamps": malformed_timestamps,
-        "outside_range": sorted(key for key in timestamps if key not in expected_months),
+        "outside_range": sorted(
+            key for key in timestamps if key not in expected_months
+        ),
     }
 
 
 def _print_validation_summary(results, start, end):
     """Print a human-readable validation summary."""
     resolved = results["timestamps_in_range"] + results["known_no_archive"]
-    coverage_pct = (resolved / results["expected_months"] * 100) if results["expected_months"] else 0
+    coverage_pct = (
+        (resolved / results["expected_months"] * 100)
+        if results["expected_months"]
+        else 0
+    )
     print(
         f"\n# Existing _WAYBACK_TIMESTAMPS validation for {start} through {end}\n"
         f"# Gap months: {results['expected_months']}\n"
@@ -334,7 +342,9 @@ def _print_validation_summary(results, start, end):
     if results["malformed_keys"]:
         print(f"# Malformed month keys: {', '.join(results['malformed_keys'])}")
     if results["malformed_timestamps"]:
-        pairs = ", ".join(f"{key}={value}" for key, value in results["malformed_timestamps"])
+        pairs = ", ".join(
+            f"{key}={value}" for key, value in results["malformed_timestamps"]
+        )
         print(f"# Malformed Wayback timestamps: {pairs}")
 
     ok = not (

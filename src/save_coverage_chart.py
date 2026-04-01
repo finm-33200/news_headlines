@@ -6,10 +6,9 @@ headlines are matched by scraped sources each day.
 
 from pathlib import Path
 
-import pandas as pd
 import plotly.graph_objects as go
 import polars as pl
-from pull_free_newswires import load_newswire_headlines
+
 from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))
@@ -37,14 +36,15 @@ def main():
     rp_daily = rp.group_by("date").agg(pl.len().alias("rp_total")).sort("date")
 
     # Union of matched RP story IDs from both crosswalks
-    combined_matched = pl.concat([
-        nw_cw.select("date", "rp_story_id"),
-        gd_cw.select("date", "rp_story_id"),
-    ]).unique(subset=["date", "rp_story_id"])
+    combined_matched = pl.concat(
+        [
+            nw_cw.select("date", "rp_story_id"),
+            gd_cw.select("date", "rp_story_id"),
+        ]
+    ).unique(subset=["date", "rp_story_id"])
 
     combined_daily = (
-        combined_matched
-        .group_by("date")
+        combined_matched.group_by("date")
         .agg(pl.col("rp_story_id").n_unique().alias("matched"))
         .sort("date")
     )
@@ -52,9 +52,7 @@ def main():
     match_rate = (
         rp_daily.join(combined_daily, on="date", how="left")
         .with_columns(pl.col("matched").fill_null(0))
-        .with_columns(
-            (pl.col("matched") / pl.col("rp_total") * 100).alias("match_pct")
-        )
+        .with_columns((pl.col("matched") / pl.col("rp_total") * 100).alias("match_pct"))
         .sort("date")
     )
 
@@ -66,13 +64,15 @@ def main():
 
     # Build Plotly chart
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=match_rate_pd.index.tolist(),
-        y=match_rate_pd["match_pct_ma"].tolist(),
-        mode="lines",
-        line=dict(color="steelblue", width=1),
-        name="Match rate",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=match_rate_pd.index.tolist(),
+            y=match_rate_pd["match_pct_ma"].tolist(),
+            mode="lines",
+            line=dict(color="steelblue", width=1),
+            name="Match rate",
+        )
+    )
     fig.update_layout(
         title=f"RavenPack Match Rate ({MA_WINDOW}-day MA, newswire + GDELT combined)",
         xaxis_title="Date",
