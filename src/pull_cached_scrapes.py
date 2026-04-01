@@ -33,12 +33,12 @@ from settings import config
 # ---------------------------------------------------------------------------
 # Dropbox — dl=1 triggers a direct download.
 DROPBOX_ZIP_URL = (
-    "https://www.dropbox.com/scl/fi/kcq0pwfmj11c5v71otu1p/"
-    "_data.zip?rlkey=9td5ylyn9ev9x41xkw29dltf2&st=bw27hqre&dl=1"
+    "https://www.dropbox.com/scl/fi/e4xk1an6ax5x1zq4qxdla/"
+    "_data.zip?rlkey=6ambg8n8w8k7xy5cjle4h21t5&st=jtglv2l9&dl=1"
 )
 
 # Google Drive file ID (used by gdown and curl fallback).
-GDRIVE_FILE_ID = "1l6WhhBDDFiOndEG2OHwE_wwYGl5Acdmh"
+GDRIVE_FILE_ID = "1D2PG75SP-WvWpS2f55qVpCjbp_v7LaLL"
 
 # Directories we expect to find inside the ZIP (after removing any wrapper).
 EXPECTED_DIRS = [
