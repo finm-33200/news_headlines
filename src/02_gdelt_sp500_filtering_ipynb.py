@@ -37,8 +37,6 @@ from pathlib import Path
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
 import polars as pl
 
 from pull_gdelt_headlines import (
@@ -75,11 +73,9 @@ else:
 
 # %%
 gd_sp = filter_to_month(load_gdelt_headlines(), SAMPLE_MONTH).collect()
-lookup = pd.read_parquet(DATA_DIR / "sp500_names_lookup.parquet")
 
 print(f"Sample month: {SAMPLE_MONTH} ({SAMPLE_START} to {SAMPLE_END})")
-print(f"S&P 500-filtered headlines (1 month): {len(gd_sp):>10,}")
-print(f"S&P 500 names lookup rows:            {len(lookup):>10,}")
+print(f"Source-filtered headlines (1 month): {len(gd_sp):>10,}")
 
 # %% [markdown]
 # ---
@@ -133,24 +129,6 @@ pl.DataFrame(
         ],
     }
 )
-
-# %% [markdown]
-# ### Short normalized names — high false-positive risk
-#
-# The lookup table normalizes company names by lowercasing, stripping
-# punctuation, and removing corporate suffixes (inc, corp, ltd, etc.).
-# Names shorter than 5 characters are already filtered out, but some
-# boundary cases remain:
-
-# %%
-short_names = lookup[lookup["comnam_norm"].str.len() <= 6].copy()
-short_names = short_names.sort_values("comnam_norm").drop_duplicates("comnam_norm")
-
-print(f"Lookup entries with normalized name <= 6 characters: {len(short_names)}")
-print("\nExamples of short normalized names:\n")
-for _, row in short_names.head(20).iterrows():
-    ticker = row.ticker if pd.notna(row.ticker) else "N/A"
-    print(f'  "{row.comnam}"  →  "{row.comnam_norm}"  (ticker={ticker})')
 
 # %% [markdown]
 # ---
@@ -212,8 +190,8 @@ if _HAS_BQ:
     # Add the final stage from the local data
     n_sp500 = len(gd_sp)
     pct_sp500 = f"{n_sp500 / prev_n * 100:.1f}%"
-    funnel_counts["5. Matches S&P 500 company name"] = n_sp500
-    print(f"{'5. Matches S&P 500 company name':<45} {n_sp500:>12,} {pct_sp500:>10}")
+    funnel_counts["5. Local data (source-filtered)"] = n_sp500
+    print(f"{'5. Local data (source-filtered)':<45} {n_sp500:>12,} {pct_sp500:>10}")
 else:
     print("BigQuery not configured (GCP_PROJECT not set) — skipping filtering funnel.")
     print("Set GCP_PROJECT in .env to run these queries.")
@@ -248,158 +226,7 @@ if _HAS_BQ:
 
 # %% [markdown]
 # ---
-# ## 3. Coverage: What Matched
-
-# %%
-matched_companies = (
-    gd_sp.group_by("matched_company", "ticker", "permno")
-    .agg(pl.len().alias("n_headlines"))
-    .sort("n_headlines", descending=True)
-)
-
-n_permnos = gd_sp["permno"].n_unique()
-n_companies = matched_companies.height
-
-print(f"Distinct PERMNOs matched:   {n_permnos}")
-print(f"Distinct (company, ticker): {n_companies}")
-
-# %%
-print("Top 25 companies by headline count:\n")
-for row in matched_companies.head(25).iter_rows():
-    company, ticker, permno, n = row
-    ticker = ticker if ticker is not None else "N/A"
-    print(f"  {n:>6,}  {ticker:<8s}  {company}")
-
-# %% [markdown]
-# ---
-# ## 4. The False Positive Problem
-#
-# Our normalization strips corporate suffixes like "bancorp" and "corp".
-# This can produce generic names that match far too broadly — e.g.,
-# "UNITED STATES BANCORP" normalizes to "united states", matching every
-# US government entity in GDELT.
-
-# %%
-SUSPICIOUS_THRESHOLD = 20_000
-
-company_counts = (
-    gd_sp.group_by("matched_company")
-    .agg(pl.len().alias("n"))
-    .sort("n", descending=True)
-)
-
-top_offenders = company_counts.head(10).to_pandas()
-lookup_map = lookup.drop_duplicates("comnam")[["comnam", "comnam_norm"]].set_index(
-    "comnam"
-)
-
-print(f"{'Company':<35} {'Norm. Name':<25} {'Headlines':>10}")
-print("-" * 72)
-for _, row in top_offenders.iterrows():
-    company = row["matched_company"]
-    n = row["n"]
-    norm = (
-        lookup_map.loc[company, "comnam_norm"] if company in lookup_map.index else "?"
-    )
-    print(f"{company:<35} {norm:<25} {n:>10,}")
-
-# %% [markdown]
-# ### What false-positive headlines look like
-
-# %%
-fp_companies = ["UNITED STATES BANCORP"]
-big_hitters = company_counts.filter(pl.col("n") > SUSPICIOUS_THRESHOLD)[
-    "matched_company"
-].to_list()
-fp_companies = list(dict.fromkeys(fp_companies + big_hitters))
-
-for company in fp_companies[:3]:
-    subset = gd_sp.filter(pl.col("matched_company") == company)
-    norm = (
-        lookup_map.loc[company, "comnam_norm"] if company in lookup_map.index else "?"
-    )
-    print(f"\n{'=' * 80}")
-    print(f'{company}  (normalizes to "{norm}")')
-    print(f"{len(subset):,} headlines — sample of clearly irrelevant ones:")
-    print(f"{'=' * 80}")
-    sample = subset.sample(min(15, len(subset)), seed=42)
-    for row in sample.iter_rows(named=True):
-        matched_org = row.get("matched_org_raw", "")
-        hl = row["headline"][:120]
-        print(f"  org: {matched_org:<30s}  headline: {hl}")
-
-# %% [markdown]
-# ### Quantifying the damage
-
-# %%
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-headline_counts = matched_companies["n_headlines"].to_numpy()
-
-axes[0].hist(headline_counts, bins=50, color="steelblue", edgecolor="white")
-axes[0].set_xlabel("Headlines per company")
-axes[0].set_ylabel("Number of companies")
-axes[0].set_title("Distribution of headline counts per company")
-
-ranked = np.sort(headline_counts)[::-1]
-axes[1].loglog(range(1, len(ranked) + 1), ranked, "o-", markersize=3, color="steelblue")
-axes[1].set_xlabel("Company rank")
-axes[1].set_ylabel("Headlines")
-axes[1].set_title("Rank-frequency plot (log-log)")
-
-fig.tight_layout()
-plt.show()
-
-# %%
-suspicious = matched_companies.filter(pl.col("n_headlines") > SUSPICIOUS_THRESHOLD)
-suspicious_headlines = gd_sp.filter(
-    pl.col("matched_company").is_in(suspicious["matched_company"])
-)
-
-n_suspicious = len(suspicious_headlines)
-n_clean = len(gd_sp) - n_suspicious
-
-print(f"Companies with > {SUSPICIOUS_THRESHOLD:,} headlines/month: {suspicious.height}")
-print(
-    f"Headlines from suspicious matches:    {n_suspicious:>8,} ({n_suspicious / len(gd_sp) * 100:.1f}%)"
-)
-print(
-    f"Headlines from remaining companies:   {n_clean:>8,} ({n_clean / len(gd_sp) * 100:.1f}%)"
-)
-
-# %%
-print("Suspicious companies:\n")
-for row in suspicious.iter_rows():
-    company, ticker, permno, n = row
-    ticker = ticker if ticker is not None else "N/A"
-    print(f"  {n:>6,}  {ticker:<8s}  {company}")
-
-# %% [markdown]
-# ---
-# ## 5. Spot-Check: Do the Clean Matches Look Right?
-
-# %%
-clean_sp = gd_sp.filter(~pl.col("matched_company").is_in(suspicious["matched_company"]))
-
-for company in [
-    "APPLE INC",
-    "MICROSOFT CORP",
-    "NVIDIA CORP",
-    "JPMORGAN CHASE & CO",
-    "WALMART INC",
-]:
-    subset = clean_sp.filter(pl.col("matched_company") == company)
-    if len(subset) == 0:
-        continue
-    print(f"\n{'=' * 70}")
-    print(f"{company} — {len(subset):,} headlines")
-    print(f"{'=' * 70}")
-    for row in subset.sample(min(5, len(subset)), seed=42).iter_rows(named=True):
-        print(f"  [{row['ticker']}] {row['headline'][:100]}")
-
-# %% [markdown]
-# ---
-# ## 6. Full Data Lake Coverage
+# ## 3. Full Data Lake Coverage
 #
 # The sections above analyzed a single sample month. Now we load the
 # full data lake to see temporal coverage and company distribution
@@ -434,7 +261,7 @@ ax.bar(
 ax.xaxis.set_major_locator(mdates.YearLocator())
 ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
 ax.set_ylabel("Headlines")
-ax.set_title("GDELT S&P 500 — headlines per month (data lake)")
+ax.set_title("GDELT — headlines per month (data lake)")
 fig.tight_layout()
 plt.show()
 
@@ -442,39 +269,36 @@ print(f"Months in data lake: {monthly.height}")
 print(f"Date range: {monthly['month'].min()} to {monthly['month'].max()}")
 
 # %% [markdown]
-# ### Distinct S&P 500 companies per year
+# ### Distinct sources per year
 
 # %%
-yearly_companies = (
+yearly_sources = (
     df_full.with_columns(pl.col("gkg_date").dt.year().alias("year"))
     .group_by("year")
-    .agg(pl.col("permno").n_unique().alias("n_companies"))
+    .agg(pl.col("source_name").n_unique().alias("n_sources"))
     .sort("year")
 )
 
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.bar(
-    yearly_companies["year"].to_list(),
-    yearly_companies["n_companies"].to_list(),
+    yearly_sources["year"].to_list(),
+    yearly_sources["n_sources"].to_list(),
     color="teal",
     alpha=0.8,
 )
 ax.set_xlabel("Year")
-ax.set_ylabel("Distinct PERMNOs")
-ax.set_title("Distinct S&P 500 companies per year in GDELT data lake")
+ax.set_ylabel("Distinct Sources")
+ax.set_title("Distinct source domains per year in GDELT data lake")
 fig.tight_layout()
 plt.show()
 
 # %% [markdown]
 # ---
-# ## 7. Summary
+# ## 4. Summary
 #
-# **Filtering works but is noisy.** The BigQuery server-side JOIN reduces
-# GDELT from millions of raw articles to tens of thousands of S&P 500
-# matches per month. However, aggressive name normalization creates false
-# positives — especially for companies whose names reduce to common
-# phrases after suffix stripping (e.g., "UNITED STATES BANCORP" →
-# "united states").
+# **Source-domain filtering** reduces GDELT from millions of raw articles
+# to headlines from newswire and financial-press domains that overlap
+# with RavenPack's source ecosystem.
 #
 # **GDELT and RavenPack draw from different source ecosystems.** GDELT
 # covers the open web (~98%), while RavenPack is ~95% wire services.
@@ -486,8 +310,7 @@ plt.show()
 # Both sources are combined in the final crosswalk for maximum coverage
 # (see notebook 03 for the per-source breakdown).
 #
-# **The full data lake** shows consistent coverage from 2015 to present,
-# with hundreds of distinct S&P 500 companies matched per year.
+# **The full data lake** shows consistent coverage from 2019 to present.
 
 # %% [markdown]
 # ---
