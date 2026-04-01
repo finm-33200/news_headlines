@@ -1,6 +1,6 @@
 """Create a ZIP archive of all scraped headline data for distribution.
 
-Bundles ``newswire_headlines/`` and ``gdelt_sp500_headlines/`` from DATA_DIR
+Bundles ``newswire_headlines/`` and ``gdelt_headlines/`` from DATA_DIR
 into a single ZIP file that can be uploaded to Google Drive or Dropbox.
 Students download this ZIP via ``pull_cached_scrapes.py``.
 
@@ -24,7 +24,7 @@ from settings import config
 
 CACHE_DIRS = [
     "newswire_headlines",
-    "gdelt_sp500_headlines",
+    "gdelt_headlines",
 ]
 
 
@@ -75,7 +75,7 @@ def create_cache(data_dir: Path, output_path: Path) -> Path:
     ----------
     data_dir : Path
         The DATA_DIR containing ``newswire_headlines/`` and
-        ``gdelt_sp500_headlines/`` subdirectories.
+        ``gdelt_headlines/`` subdirectories.
     output_path : Path
         Where to write the ZIP file.
 

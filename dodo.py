@@ -137,7 +137,7 @@ def task_pull():
             ],
             "targets": [
                 DATA_DIR
-                / "gdelt_sp500_headlines"
+                / "gdelt_headlines"
                 / "year=2025"
                 / "month=01"
                 / "data.parquet",
@@ -154,23 +154,22 @@ def task_pull():
         }
     else:
         yield {
-            "name": "gdelt_sp500_sample",
-            "doc": "Pull GDELT GKG headlines filtered to S&P 500 companies (sample month)",
+            "name": "gdelt_sample",
+            "doc": "Pull GDELT GKG headlines (sample month)",
             "actions": [
                 "python ./src/settings.py",
-                "python ./src/pull_gdelt_sp500_headlines.py",
+                "python ./src/pull_gdelt_headlines.py",
             ],
             "targets": [
                 DATA_DIR
-                / "gdelt_sp500_headlines"
+                / "gdelt_headlines"
                 / "year=2025"
                 / "month=01"
                 / "data.parquet"
             ],
             "file_dep": [
                 "./src/settings.py",
-                "./src/pull_gdelt_sp500_headlines.py",
-                DATA_DIR / "sp500_names_lookup.parquet",
+                "./src/pull_gdelt_headlines.py",
             ],
             "clean": [],
         }
@@ -210,7 +209,7 @@ def task_pull():
                 "./src/settings.py",
                 "./src/create_scraped_cache.py",
             ],
-            "task_dep": ["pull:gdelt_sp500_sample", "pull:newswire_sample"],
+            "task_dep": ["pull:gdelt_sample", "pull:newswire_sample"],
             "clean": [],
             "verbosity": 2,
         }
@@ -244,7 +243,7 @@ def task_create_crosswalk():
 
     # GDELT crosswalk
     gdelt_task_dep = (
-        ["pull:cached_scrapes"] if USE_CACHED_SCRAPES else ["pull:gdelt_sp500_sample"]
+        ["pull:cached_scrapes"] if USE_CACHED_SCRAPES else ["pull:gdelt_sample"]
     )
     yield {
         "name": "gdelt",
@@ -291,7 +290,7 @@ notebook_tasks = {
         "file_dep": [
             DATA_DIR / "ravenpack_djpr.parquet",
             DATA_DIR
-            / "gdelt_sp500_headlines"
+            / "gdelt_headlines"
             / "year=2025"
             / "month=01"
             / "data.parquet",
@@ -311,7 +310,7 @@ notebook_tasks = {
         "path": "./src/02_gdelt_sp500_filtering_ipynb.py",
         "file_dep": [
             DATA_DIR
-            / "gdelt_sp500_headlines"
+            / "gdelt_headlines"
             / "year=2025"
             / "month=01"
             / "data.parquet",

@@ -42,7 +42,7 @@ GDRIVE_FILE_ID = "1l6WhhBDDFiOndEG2OHwE_wwYGl5Acdmh"
 
 # Directories we expect to find inside the ZIP (after removing any wrapper).
 EXPECTED_DIRS = [
-    "gdelt_sp500_headlines",
+    "gdelt_headlines",
     "newswire_headlines",
 ]
 

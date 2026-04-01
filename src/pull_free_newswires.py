@@ -52,7 +52,7 @@ import requests
 from bs4 import BeautifulSoup
 from lxml import etree
 
-from pull_gdelt_sp500_headlines import SAMPLE_MONTH, _generate_month_ranges
+from pull_gdelt_headlines import SAMPLE_MONTH, _generate_month_ranges
 from settings import config
 
 DATA_DIR = Path(config("DATA_DIR"))

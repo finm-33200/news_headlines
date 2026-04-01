@@ -40,17 +40,17 @@ notebook_path = "_output/03_crosswalk_quality_ipynb.ipynb"
 
 [dataframes]
 
-[dataframes.gdelt_sp500_headlines]
-dataframe_name = "GDELT S&P 500 Headlines"
-short_description_df = "GDELT GKG headlines filtered to S&P 500 companies via BigQuery. Hive-partitioned by year and month, covering Feb 2015 onward."
+[dataframes.gdelt_headlines]
+dataframe_name = "GDELT Headlines"
+short_description_df = "GDELT GKG headlines for English articles mentioning organizations. Hive-partitioned by year and month, covering Feb 2015 onward."
 data_sources = ["GDELT Global Knowledge Graph"]
 data_providers = ["GDELT Project"]
 links_to_data_providers = ["https://www.gdeltproject.org"]
-topic_tags = ["Headlines", "GDELT", "S&P 500"]
+topic_tags = ["Headlines", "GDELT"]
 type_of_data_access = ["Free (BigQuery)"]
-how_is_pulled = "SQL queries via Google BigQuery filtering GDELT GKG records to S&P 500 company mentions."
-path_to_parquet_data = "_data/gdelt_sp500_headlines/**/*.parquet"
-dataframe_docs_path = "docs_src/dataframes/gdelt_sp500_headlines.md"
+how_is_pulled = "SQL queries via Google BigQuery pulling all English GDELT GKG records with organization mentions and page titles."
+path_to_parquet_data = "_data/gdelt_headlines/**/*.parquet"
+dataframe_docs_path = "docs_src/dataframes/gdelt_headlines.md"
 
 [dataframes.newswire_headlines]
 dataframe_name = "Newswire Headlines"
