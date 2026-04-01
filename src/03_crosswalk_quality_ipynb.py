@@ -21,7 +21,9 @@
 #
 # This notebook evaluates both crosswalks: how many headlines matched,
 # at what quality, which source contributes more to RavenPack coverage,
-# and whether there are coverage gaps.
+# and whether there are coverage gaps. Newswire-vs-RP comparisons use
+# the full newswire crosswalk range; combined (newswire + GDELT) stats
+# use the **overlap date range** where both crosswalks have data.
 
 # %%
 import datetime
@@ -42,48 +44,66 @@ DATA_DIR = Path(config("DATA_DIR"))
 # ---
 # ## Key Result: RavenPack Headline Coverage
 #
-# All statistics below are restricted to the crosswalk date range
-# so that newswire and RavenPack counts are directly comparable.
+# All statistics below are restricted to the **overlap date range**
+# where both newswire and GDELT crosswalks have data, so that
+# coverage comparisons across sources are fair.
 
 # %%
 cw = pl.read_parquet(DATA_DIR / "newswire_ravenpack_crosswalk.parquet")
+gd_cw = pl.read_parquet(DATA_DIR / "gdelt_ravenpack_crosswalk.parquet")
+
+# Fair-comparison window: overlap of both crosswalk date ranges
+date_start = max(cw["date"].min(), gd_cw["date"].min())
+date_end = min(cw["date"].max(), gd_cw["date"].max())
+
+cw = cw.filter((pl.col("date") >= date_start) & (pl.col("date") <= date_end))
+gd_cw = gd_cw.filter((pl.col("date") >= date_start) & (pl.col("date") <= date_end))
 
 nw_full = load_newswire_headlines().collect()
 nw_full = nw_full.with_columns(pl.col("date").cast(pl.Date))
 nw_full = nw_full.filter(
-    (pl.col("date") >= cw["date"].min()) & (pl.col("date") <= cw["date"].max())
+    (pl.col("date") >= date_start) & (pl.col("date") <= date_end)
 )
 
 rp_full = (
     pl.scan_parquet(DATA_DIR / "ravenpack_djpr.parquet")
     .with_columns(pl.col("timestamp_utc").cast(pl.Date).alias("date"))
-    .filter((pl.col("date") >= cw["date"].min()) & (pl.col("date") <= cw["date"].max()))
+    .filter((pl.col("date") >= date_start) & (pl.col("date") <= date_end))
     .select("date", "rp_story_id", "entity_name", "source_name", "headline")
     .collect()
 )
 
 cw_rows = len(cw)
-cw_date_min = cw["date"].min()
-cw_date_max = cw["date"].max()
+cw_date_min = date_start
+cw_date_max = date_end
 cw_n_dates = cw["date"].n_unique()
-nw_total_urls = nw_full.filter(
-    (pl.col("date") >= cw["date"].min()) & (pl.col("date") <= cw["date"].max())
-)["source_url"].n_unique()
+nw_total_urls = nw_full["source_url"].n_unique()
 nw_matched_urls = cw["nw_source_url"].n_unique()
 nw_match_rate = nw_matched_urls / nw_total_urls * 100
 rp_total_stories = rp_full["rp_story_id"].n_unique()
 rp_matched_stories = cw["rp_story_id"].n_unique()
 rp_match_rate = rp_matched_stories / rp_total_stories * 100
+gd_matched_stories = gd_cw["rp_story_id"].n_unique()
+gd_match_rate = gd_matched_stories / rp_total_stories * 100
+combined_matched_stories = pl.concat([
+    cw.select("rp_story_id"),
+    gd_cw.select("rp_story_id"),
+])["rp_story_id"].n_unique()
+combined_match_rate = combined_matched_stories / rp_total_stories * 100
 
 pl.DataFrame({
     "metric": [
-        "RP headlines matched",
+        "RP matched — combined",
+        "RP matched — newswire",
+        "RP matched — GDELT",
         "NW headlines matched",
-        "Crosswalk pairs",
-        "Date range",
+        "Crosswalk pairs (newswire)",
+        "Date range (overlap)",
     ],
     "value": [
+        f"{combined_match_rate:.1f}% ({combined_matched_stories:,} / {rp_total_stories:,})",
         f"{rp_match_rate:.1f}% ({rp_matched_stories:,} / {rp_total_stories:,})",
+        f"{gd_match_rate:.1f}% ({gd_matched_stories:,} / {rp_total_stories:,})",
         f"{nw_match_rate:.1f}% ({nw_matched_urls:,} / {nw_total_urls:,})",
         f"{cw_rows:,}",
         f"{cw_date_min} to {cw_date_max} ({cw_n_dates:,} dates)",
@@ -191,7 +211,8 @@ rp_coverage = (
     .sort("total_stories", descending=True)
 )
 print("RavenPack coverage by source:")
-rp_coverage
+with pl.Config(tbl_rows=-1):
+    print(rp_coverage)
 
 # %% [markdown]
 # ---
@@ -251,9 +272,6 @@ plt.show()
 # by at least one scraped source (newswire or GDELT)?
 
 # %%
-# Load GDELT crosswalk and combine with newswire crosswalk
-gd_cw = pl.read_parquet(DATA_DIR / "gdelt_ravenpack_crosswalk.parquet")
-
 # Union of matched RP story IDs from both crosswalks, by date
 combined_matched = pl.concat([
     cw.select("date", "rp_story_id"),
@@ -459,17 +477,21 @@ else:
 scores_np_ = cw["fuzzy_score"].to_numpy()
 pl.DataFrame({
     "metric": [
-        "RP headlines matched (newswire crosswalk)",
+        "RP matched — combined",
+        "RP matched — newswire",
+        "RP matched — GDELT",
         "NW headlines matched",
         "Newswire crosswalk pairs",
-        "Median fuzzy score",
+        "Median fuzzy score (newswire)",
         "Avg. daily RP coverage — newswire only",
         "Avg. daily RP coverage — GDELT only",
         "Avg. daily RP coverage — combined",
-        "Date range",
+        "Date range (overlap)",
     ],
     "value": [
+        f"{combined_match_rate:.1f}% ({combined_matched_stories:,} / {rp_total_stories:,})",
         f"{rp_match_rate:.1f}% ({rp_matched_stories:,} / {rp_total_stories:,})",
+        f"{gd_match_rate:.1f}% ({gd_matched_stories:,} / {rp_total_stories:,})",
         f"{nw_match_rate:.1f}% ({nw_matched_urls:,} / {nw_total_urls:,})",
         f"{cw_rows:,} across {cw_n_dates:,} dates",
         f"{np.median(scores_np_):.1f} (threshold: 80)",
