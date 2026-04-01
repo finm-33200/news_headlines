@@ -1,10 +1,11 @@
 """
 Pull GDELT GKG headlines via BigQuery.
 
-Pulls all English-language GDELT articles that mention at least one
-organization and contain a page title. No company-level filtering is
-applied here — downstream tasks (e.g. the RavenPack crosswalk) handle
-matching to specific universes like the S&P 500.
+Pulls English-language GDELT articles from source domains that appear
+in the RavenPack DJ Press Release feed (PR Newswire, Business Wire,
+GlobeNewswire, MarketWatch, WSJ, Barron's, etc.). Only articles with
+a page title are included. The source filter is defined in
+RP_SOURCE_DOMAINS.
 
 Three modes:
   Default    — pull a single sample month into the data lake directory
@@ -48,7 +49,7 @@ except ValueError:
 
 SAMPLE_MONTH = "2025-01"
 
-GDELT_FULL_START = "2015-02-01"
+GDELT_FULL_START = "2019-10-01"  # PAGE_TITLE added to GKG on 2019-09-22
 
 GDELT_DIR = DATA_DIR / "gdelt_headlines"
 
@@ -116,30 +117,44 @@ def _hive_partition_path(output_dir: Path, month_start: str) -> Path:
     return output_dir / f"year={year}" / f"month={month}" / "data.parquet"
 
 
+# GDELT source domains that correspond to RavenPack DJ Press Release sources.
+# Dow Jones Newswires is proprietary and doesn't appear in GDELT.
+RP_SOURCE_DOMAINS = [
+    "prnewswire.com",
+    "prnewswire.co.uk",
+    "businesswire.com",
+    "globenewswire.com",
+    "marketwatch.com",
+    "wsj.com",
+    "barrons.com",
+    "newswire.ca",
+    "realwire.com",
+]
+
+
 def _build_query(month_start: str, month_end: str) -> str:
     """Build the BigQuery SQL to pull GDELT headlines for one month.
 
     The query:
     1. Filters to English articles (TranslationInfo IS NULL)
     2. Requires a <PAGE_TITLE> tag in Extras (used as headline)
-    3. Requires at least one organization mention
-    4. Returns one row per article (no UNNEST of organizations)
+    3. Restricts to source domains that appear in the RavenPack DJ
+       Press Release feed
+    4. Returns only the columns needed for crosswalk matching
     """
+    domains_sql = ", ".join(f"'{d}'" for d in RP_SOURCE_DOMAINS)
     return f"""
     SELECT DISTINCT
         PARSE_TIMESTAMP('%E4Y%m%d%H%M%S', CAST(DATE AS STRING)) AS gkg_date,
         DocumentIdentifier AS source_url,
         SourceCommonName AS source_name,
-        Extras,
-        V2Tone,
-        V2Organizations
+        Extras
     FROM `gdelt-bq.gdeltv2.gkg_partitioned`
     WHERE _PARTITIONTIME >= TIMESTAMP('{month_start}')
       AND _PARTITIONTIME < TIMESTAMP('{month_end}')
       AND Extras LIKE '%<PAGE_TITLE>%'
       AND TranslationInfo IS NULL
-      AND V2Organizations IS NOT NULL
-      AND V2Organizations != ''
+      AND SourceCommonName IN ({domains_sql})
     """
 
 
