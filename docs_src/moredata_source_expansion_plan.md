@@ -183,48 +183,7 @@ prior runs. The remaining months with 0 parquets need the Wayback fallback.
 
 ---
 
-### 5. SEC EDGAR EFTS — MEDIUM PRIORITY (different content type)
-
-The SEC's full-text search API is **fully working** and covers **2001 to present**.
-
-```
-https://efts.sec.gov/LATEST/search-index?q="press release"&forms=8-K&startdt=YYYY-MM-DD&enddt=YYYY-MM-DD&from=0
-```
-
-- Returns up to 100 results per request; paginate with `from` parameter
-- A single day (Jan 2, 2024) returned **179 hits** for `q="press release"&forms=8-K`
-- Each hit includes: CIK, company name, filing date, accession number, file type
-- The actual press release text is in EX-99.1 exhibits attached to 8-K filings
-
-**Acquisition methods:**
-
-| Method | Feasibility | Historical depth | Speed |
-|--------|------------|-----------------|-------|
-| EFTS search API | Excellent | 2001–present | Fast (100/req) |
-| Atom feed per CIK | Working | Per-company | Real-time |
-| Filing index (daily) | Available | 1993+ | Moderate |
-
-**Recommended approach:**
-1. Query EFTS for `forms=8-K` + `q="press release"` by date range
-2. For each hit, fetch the EX-99.1 exhibit and extract the headline
-3. Headline is typically the first `<h1>` or the exhibit's first line
-4. Requires SEC-compliant User-Agent header
-
-**Content character**: EDGAR press releases are the **same releases** distributed
-by PR Newswire, Business Wire, and GlobeNewswire — companies file them as 8-K
-exhibits. This makes EDGAR a **complementary path to the same content**, with
-different coverage characteristics (better coverage of SEC-filing companies,
-potentially different time lag).
-
-**Estimated effort**: Medium — new scraper class + exhibit text parsing. The
-EFTS API is well-behaved and doesn't require rate-limit gymnastics.
-
-**Expected RavenPack overlap**: High for US public companies. EDGAR only covers
-SEC filers, so non-US and private-company press releases won't appear here.
-
----
-
-### 6. AccessWire — NOT VIABLE
+### 5. AccessWire — NOT VIABLE
 
 - Sitemaps return 403
 - RSS is explicitly disallowed in robots.txt
@@ -264,7 +223,6 @@ SEC filers, so non-US and private-company press releases won't appear here.
 | **P1** | PR Newswire backfill | Timestamp block largely populated; validate and backfill remaining 11 no-archive months only if new captures appear | Small | High (fills 90-month gap) |
 | **P2** | Newswire.ca / Cision | **DONE** — `NewswireCaScraper` implemented. 179 monthly gz sitemaps, ~2.6K/month. Slug-based fast-path (0 page fetches). | Small | Moderate |
 | **P3** | Business Wire (Wayback) | **TOOLING DONE** — CDX enumeration + Wayback headline fetcher built. 218 articles/day from CDX. Two-phase pipeline. | Medium | High |
-| **P4** | SEC EDGAR EFTS | **TOOLING DONE** — EFTS query + EX-99.1 exhibit headline extraction. 51 headlines from 66 exhibits (77% yield). | Medium | Moderate-High |
 
 ---
 
@@ -330,28 +288,6 @@ python src/enumerate_businesswire_urls.py --start 2004-01-01 --end 2026-04-01
 python src/fetch_businesswire_headlines.py --start 2004-01-01 --end 2026-04-01
 ```
 
-### Phase 4: EDGAR EFTS (P4) — TOOLING DONE
-
-`src/pull_edgar_press_releases.py` built and validated:
-- Queries EFTS for `forms=8-K, q="press release"` by date
-- Paginates through all results (100/page)
-- For each EX-99.1 exhibit: fetches from SEC EDGAR, extracts headline
-  from first bold text (with boilerplate filtering)
-- Includes a read-only `--validate-date YYYY-MM-DD` mode to report EFTS hits,
-  EX-99 exhibit counts, extraction yield, sample headlines, and sample failed
-  exhibit URLs before running a wider backfill
-- SEC-compliant User-Agent header
-- Validated: 179 EFTS hits → 66 EX-99 exhibits → 51 headlines for Jan 2, 2024
-  (77% yield; remaining 23% have non-standard exhibit formatting)
-- Coverage: 2001–present, ~150–200 filings/weekday
-- Full backfill estimate: ~24 years × 250 trading days × 150 exhibits × 0.2s = ~50 hours
-
-**To run:**
-```bash
-python src/pull_edgar_press_releases.py --validate-date 2024-01-02
-python src/pull_edgar_press_releases.py --start 2020-01-01 --end 2026-04-01
-```
-
 ---
 
 ## Architectural Consideration: Removing the S&P 500 Pre-filter
@@ -405,6 +341,4 @@ find more matches. But that's a separate decision.
   Wire articles by date (new, phase 3a)
 - `src/fetch_businesswire_headlines.py` — Wayback page fetcher + headline extraction
   for Business Wire (new, phase 3b)
-- `src/pull_edgar_press_releases.py` — EDGAR EFTS press-release headline puller
-  with EX-99.1 exhibit parsing (new, phase 4)
 - `docs_src/moredata_source_expansion_plan.md` — this document (new, updated)

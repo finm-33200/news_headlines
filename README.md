@@ -196,25 +196,6 @@ python ./src/fetch_businesswire_headlines.py --status
 Output lands in `newswire_headlines/source=businesswire/...` and is
 automatically picked up by the crosswalk.
 
-#### SEC EDGAR Press Releases
-
-Pulls press-release headlines from SEC EDGAR by searching 8-K filings for
-EX-99.1 exhibits via the EFTS full-text search API. Coverage: 2001–present.
-
-```bash
-# Validate extraction for one date before running a wider backfill
-python ./src/pull_edgar_press_releases.py --validate-date 2024-01-02
-
-# Pull a date range
-python ./src/pull_edgar_press_releases.py --start 2020-01-01 --end 2026-04-01
-
-# Check progress
-python ./src/pull_edgar_press_releases.py --status
-```
-
-Output lands in `newswire_headlines/source=edgar_8k/...` and is
-automatically picked up by the crosswalk.
-
 ### Formatting
 
 This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting Python code.
