@@ -238,12 +238,12 @@ print(f"Distinct PERMNOs that have ever been in the S&P 500: {n_unique:,}")
 
 # %% [markdown]
 # ---
-# ## 3. GDELT S&P 500 — `gdelt_sp500_headlines/`
+# ## 3. GDELT Headlines — `gdelt_headlines/`
 #
-# Source script: `pull_gdelt_sp500_headlines.py`
+# Source script: `pull_gdelt_headlines.py`
 #
 # Page-title headlines extracted from GDELT's Global Knowledge Graph 2.0,
-# filtered server-side in BigQuery to articles mentioning S&P 500 companies.
+# filtered to English articles mentioning at least one organization.
 # Stored as a Hive-partitioned data lake (`year=YYYY/month=MM/data.parquet`).
 #
 # GDELT is **free and massive** (~400k articles/day), but its content comes
@@ -261,18 +261,16 @@ print(f"Distinct PERMNOs that have ever been in the S&P 500: {n_unique:,}")
 # | `source_url` | Full URL of the source article |
 # | `source_name` | Domain / common name of the news source |
 # | `headline` | Page title extracted from `<PAGE_TITLE>` tags |
-# | `matched_company` | S&P 500 company name matched via V2Organizations |
-# | `permno` | CRSP permanent security identifier |
-# | `ticker` | Stock ticker symbol |
+# | `V2Organizations` | Semicolon-separated organization mentions |
 
 # %%
-from pull_gdelt_sp500_headlines import (
+from pull_gdelt_headlines import (
     SAMPLE_MONTH,
     filter_to_month,
-    load_gdelt_sp500_headlines,
+    load_gdelt_headlines,
 )
 
-gd = filter_to_month(load_gdelt_sp500_headlines(), SAMPLE_MONTH)
+gd = filter_to_month(load_gdelt_headlines(), SAMPLE_MONTH)
 n_rows_gd = gd.select(pl.len()).collect().item()
 cols_gd = gd.collect_schema().names()
 print(f"Rows: {n_rows_gd:,}  |  Columns: {len(cols_gd)}")

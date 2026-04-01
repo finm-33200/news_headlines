@@ -21,10 +21,8 @@
 # All data is freely available on **Google BigQuery**.
 #
 # To use GDELT for firm-level finance, we filter its firehose down to
-# articles mentioning S&P 500 companies. We upload a small lookup table
-# (~4,500 rows) to BigQuery and **JOIN server-side** against the GKG
-# (Global Knowledge Graph) table on normalized company names. The full
-# query and post-processing logic are in `pull_gdelt_sp500_headlines.py`.
+# articles mentioning organizations. The full query and post-processing
+# logic are in `pull_gdelt_headlines.py`.
 #
 # This notebook examines the **quality** of that filtering: how much data
 # survives each filter stage, which companies match, and where false
@@ -42,11 +40,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pl
-from pull_gdelt_sp500_headlines import (
-    GDELT_SP500_DIR,
+from pull_gdelt_headlines import (
+    GDELT_DIR,
     SAMPLE_MONTH,
     filter_to_month,
-    load_gdelt_sp500_headlines,
+    load_gdelt_headlines,
 )
 from settings import config
 
@@ -76,7 +74,7 @@ else:
     SAMPLE_END = _sm_dt.replace(month=_sm_dt.month + 1, day=1).strftime("%Y-%m-%d")
 
 # %%
-gd_sp = filter_to_month(load_gdelt_sp500_headlines(), SAMPLE_MONTH).collect()
+gd_sp = filter_to_month(load_gdelt_headlines(), SAMPLE_MONTH).collect()
 lookup = pd.read_parquet(DATA_DIR / "sp500_names_lookup.parquet")
 
 print(f"Sample month: {SAMPLE_MONTH} ({SAMPLE_START} to {SAMPLE_END})")
@@ -406,7 +404,7 @@ for company in [
 # across all available months.
 
 # %%
-lf = load_gdelt_sp500_headlines()
+lf = load_gdelt_headlines()
 df_full = lf.collect()
 print(f"Total rows in data lake: {len(df_full):,}")
 
