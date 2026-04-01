@@ -198,6 +198,23 @@ def task_pull():
             "clean": [],
         }
 
+        yield {
+            "name": "create_scrape_cache",
+            "doc": "ZIP scraped headlines for distribution via Google Drive",
+            "actions": [
+                "python ./src/settings.py",
+                "python ./src/create_scraped_cache.py",
+            ],
+            "targets": [DATA_DIR / "scraped_headlines_cache.zip"],
+            "file_dep": [
+                "./src/settings.py",
+                "./src/create_scraped_cache.py",
+            ],
+            "task_dep": ["pull:gdelt_sp500_sample", "pull:newswire_sample"],
+            "clean": [],
+            "verbosity": 2,
+        }
+
 
 def task_create_crosswalk():
     """Fuzzy-match crosswalks between scraped headlines and RavenPack"""
