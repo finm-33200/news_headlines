@@ -236,7 +236,10 @@ def config(
 
     # 4. Use the default value provided in the local file. Error if not found
     try:
-        return _config(var_name, default=default, cast=cast)
+        kwargs = {"default": default}
+        if cast is not None:
+            kwargs["cast"] = cast
+        return _config(var_name, **kwargs)
     except Exception as e:
         raise ValueError(
             f"Configuration variable '{var_name}' is not defined. "
