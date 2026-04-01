@@ -1,6 +1,6 @@
 """
-Create a crosswalk between GDELT S&P 500 headlines and RavenPack DJ Press
-Release headlines via date-blocked fuzzy matching.
+Create a crosswalk between GDELT headlines and RavenPack DJ Press Release
+headlines via date-blocked fuzzy matching.
 
 For each calendar date, compares every GDELT headline against all
 RavenPack headlines from the same date using token_sort_ratio. Keeps only
@@ -49,9 +49,9 @@ def _load_data(data_dir=DATA_DIR):
 
     RavenPack is filtered to the GDELT date range to save memory.
     """
-    logger.info("Loading GDELT S&P 500 headlines...")
+    logger.info("Loading GDELT headlines...")
     gdelt = (
-        pl.scan_parquet(data_dir / "gdelt_sp500_headlines" / "**" / "*.parquet")
+        pl.scan_parquet(data_dir / "gdelt_headlines" / "**" / "*.parquet")
         .with_columns(pl.col("gkg_date").cast(pl.Date).alias("date"))
         .filter(
             pl.col("headline").is_not_null()
@@ -115,9 +115,6 @@ def _match_day(gdelt_day, rp_day, date_val, min_score):
 
     gdelt_source_urls = gdelt_day["source_url"].to_list()
     gdelt_source_names = gdelt_day["source_name"].to_list()
-    gdelt_matched_companies = gdelt_day["matched_company"].to_list()
-    gdelt_permnos = gdelt_day["permno"].to_list()
-    gdelt_tickers = gdelt_day["ticker"].to_list()
     rp_story_ids = rp_day["rp_story_id"].to_list()
     rp_entity_ids = rp_day["rp_entity_id"].to_list()
     rp_entity_names = rp_day["entity_name"].to_list()
@@ -134,9 +131,6 @@ def _match_day(gdelt_day, rp_day, date_val, min_score):
                     "gdelt_source_url": gdelt_source_urls[i],
                     "gdelt_headline": gdelt_headlines[i],
                     "gdelt_source_name": gdelt_source_names[i],
-                    "gdelt_matched_company": gdelt_matched_companies[i],
-                    "gdelt_permno": gdelt_permnos[i],
-                    "gdelt_ticker": gdelt_tickers[i],
                     "rp_story_id": rp_story_ids[j],
                     "rp_entity_id": rp_entity_ids[j],
                     "rp_entity_name": rp_entity_names[j],
@@ -195,9 +189,6 @@ def build_crosswalk(gdelt, rp, min_score=DEFAULT_MIN_SCORE):
                 "gdelt_source_url": pl.Utf8,
                 "gdelt_headline": pl.Utf8,
                 "gdelt_source_name": pl.Utf8,
-                "gdelt_matched_company": pl.Utf8,
-                "gdelt_permno": pl.Int64,
-                "gdelt_ticker": pl.Utf8,
                 "rp_story_id": pl.Utf8,
                 "rp_entity_id": pl.Utf8,
                 "rp_entity_name": pl.Utf8,
@@ -243,7 +234,7 @@ def _print_status(output_path):
         flush=True,
     )
 
-    print("\n  Matches by GDELT source:", flush=True)
+    print("\n  Matches by GDELT source (top 20):", flush=True)
     for row in (
         cw.group_by("gdelt_source_name")
         .agg(pl.len().alias("n"))
