@@ -166,7 +166,7 @@ def _filter_english_articles(rows, date_str):
     formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
     for row in rows:
-        ts, url, status = row[0], row[1], row[2]
+        ts, url, _status = row[0], row[1], row[2]
         url_clean = url.rstrip("/")
 
         # Must be an English article: contains /en at the right position
