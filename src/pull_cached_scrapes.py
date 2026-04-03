@@ -101,7 +101,7 @@ def _download_from_dropbox(dest: Path) -> None:
 
 
 def _download_from_gdrive(dest: Path) -> None:
-    """Download the ZIP from Google Drive (gdown → curl fallback)."""
+    """Download the ZIP from Google Drive (gdown -> curl fallback)."""
     # Try gdown first
     try:
         import gdown

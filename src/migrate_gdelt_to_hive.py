@@ -1,7 +1,7 @@
 """One-time migration: convert flat GDELT parquet files to Hive-style partitioning.
 
 Converts:  gdelt_sp500_headlines/YYYY-MM.parquet
-       →   gdelt_sp500_headlines/year=YYYY/month=MM/data.parquet
+       ->   gdelt_sp500_headlines/year=YYYY/month=MM/data.parquet
 
 Idempotent: skips months where data.parquet already exists.
 After migration, verifies total row count and deletes old flat files.
@@ -51,7 +51,7 @@ def migrate():
         df.write_parquet(hive_path)
         new_total_rows += len(df)
         print(
-            f"  {f.name} → {hive_path.relative_to(GDELT_SP500_DIR)} ({len(df):,} rows)"
+            f"  {f.name} -> {hive_path.relative_to(GDELT_SP500_DIR)} ({len(df):,} rows)"
         )
 
     print("\nRow count verification:")

@@ -173,7 +173,7 @@ def _xml_root(xml_input):
 
 
 def _parse_sitemap_index(xml_text):
-    """Parse a sitemap index XML → list of child sitemap URLs."""
+    """Parse a sitemap index XML -> list of child sitemap URLs."""
     root = _xml_root(xml_text)
     if root is None:
         logger.warning("Failed to parse sitemap index XML")
@@ -193,7 +193,7 @@ def _parse_sitemap_index(xml_text):
 
 
 def _parse_sitemap_urls(xml_text, url_filter=None):
-    """Parse a sitemap XML → list of page URLs, optionally filtered."""
+    """Parse a sitemap XML -> list of page URLs, optionally filtered."""
     root = _xml_root(xml_text)
     if root is None:
         logger.warning("Failed to parse sitemap XML")
@@ -216,7 +216,7 @@ def _parse_sitemap_urls(xml_text, url_filter=None):
 
 
 def _parse_sitemap_news_entries(xml_bytes):
-    """Parse a Google News sitemap → list of {headline, source_url, date} dicts.
+    """Parse a Google News sitemap -> list of {headline, source_url, date} dicts.
 
     Returns an empty list if no <news:title> elements are found (i.e., the
     sitemap is a plain URL list without news metadata).
@@ -654,7 +654,7 @@ class NewswireCaScraper:
     scraper extracts approximate headlines from the URL slug:
 
         /news-releases/some-headline-text-123456789.html
-        → "Some Headline Text"
+        -> "Some Headline Text"
 
     Slug-derived headlines preserve all content words, which is sufficient
     for TF-IDF crosswalk matching against RavenPack.

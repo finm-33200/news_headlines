@@ -135,7 +135,7 @@ def _headline_from_slug(slug):
     """
     if not slug:
         return None
-    # URL-decode percent-encoded characters (e.g. %E2%80%99 → ')
+    # URL-decode percent-encoded characters (e.g. %E2%80%99 -> ')
     from urllib.parse import unquote
 
     text = unquote(slug).replace("-", " ").strip()

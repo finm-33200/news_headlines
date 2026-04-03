@@ -221,7 +221,7 @@ if _HAS_BQ:
 
     total_reduction = counts[0] / counts[-1] if counts[-1] > 0 else float("inf")
     print(
-        f"\nTotal reduction: {counts[0]:,} → {counts[-1]:,} ({total_reduction:.0f}× smaller)"
+        f"\nTotal reduction: {counts[0]:,} -> {counts[-1]:,} ({total_reduction:.0f}x smaller)"
     )
 
 # %% [markdown]
