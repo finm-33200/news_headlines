@@ -8,38 +8,41 @@
 
 The coverage chart (`rp_match_rate_coverage.html`) shows a gap from mid-2012 through end-2019 where match rate drops to near zero. This is caused by missing PR Newswire sitemap data — the live URLs at `prnewswire.com` return 404 for those months.
 
-**On-disk data confirms the gap:**
+**On-disk data confirms a historical PR Newswire coverage gap, but the rerun story is subtler than “missing files” alone:**
 
 | Period | Day-parquets | Notes |
 |--------|-------------|-------|
 | 2010-12 to 2012-06 | ~313 | Partial coverage |
-| **2012-07 to 2019-12** | **0** | No directories, no `.complete` markers |
+| **2012-07 to 2019-12** | **sparse / inconsistent** | Some months still have month-level `.complete` markers even when daily output is partial or absent, so reruns may skip them |
 | 2020-01 onward | ~328/year | Good coverage |
 
 GDELT (starts Feb 2015, ~7% match rate) is not the fix. PR Newswire is the dominant source (~80%+ match rate).
 
 ## Root Cause
 
-PR Newswire's monthly gzipped sitemaps (`Sitemap_Index_{Mon}_{Year}.xml.gz`) are no longer hosted for 2012-07 through 2019-12. The scraper's Wayback Machine fallback (`_WAYBACK_TIMESTAMPS` in `pull_free_newswires.py`) only covers 9 corrupted months in 2021-2023 — nothing for the 90-month gap.
+PR Newswire's monthly gzipped sitemaps (`Sitemap_Index_{Mon}_{Year}.xml.gz`) are no longer hosted for 2012-07 through 2019-12. That historical gap is now partially addressed: the scraper's Wayback Machine fallback (`_WAYBACK_TIMESTAMPS` in `pull_free_newswires.py`) contains validated timestamps for **79 of the 90** missing months, and the remaining **11 months** are explicitly tracked as having no validated Wayback archive yet.
 
-## Proposed Fix
+## Current Status
 
-### 1. Create `src/discover_wayback_timestamps.py`
+### 1. `src/discover_wayback_timestamps.py` exists and validates cleanly
 
-A standalone script that:
-- Iterates over all 90 missing months (2012-07 through 2019-12)
-- Constructs each sitemap URL: `https://www.prnewswire.com/Sitemap_Index_{Mon}_{Year}.xml.gz`
-- Queries the Wayback CDX API (`http://web.archive.org/cdx/search/cdx?url={url}&output=json`) for archived snapshots
-- For each snapshot (newest first), downloads via `https://web.archive.org/web/{timestamp}id_/{url}`, validates it decompresses and parses as XML with `/news-release` URLs
-- Outputs a Python dict literal for `_WAYBACK_TIMESTAMPS` to stdout
+The standalone discovery/validation script is already implemented. It:
+- Iterates over the missing 2012-07 through 2019-12 monthly sitemap URLs
+- Queries the Wayback CDX API for archived snapshots
+- Downloads candidate archives and validates they decompress and contain `/news-release` URLs
+- Can validate the existing `_WAYBACK_TIMESTAMPS` block without making network calls
 
-Design: 1s delay between CDX queries, 2s between downloads. Optional `--cache-dir` for resumability. Dependencies: `requests`, `gzip`, `lxml` (already in environment).
+As of this validation pass, `python src/discover_wayback_timestamps.py --validate-existing` reports:
+- 90 expected gap months
+- 79 timestamped gap months
+- 11 explicit no-archive months
+- 100% of gap months accounted for
 
-### 2. Update `_WAYBACK_TIMESTAMPS` in `pull_free_newswires.py`
+### 2. `_WAYBACK_TIMESTAMPS` has already been updated
 
-Merge discovered timestamps into the existing dict at line 255. Sort by key. Some months may have no archive — document as known gaps.
+The PR Newswire scraper now includes the discovered historical timestamp block plus the older corrupted-month fallbacks outside the 2012–2019 gap.
 
-### 3. Run the backfill
+### 3. Remaining work: run the actual backfill
 
 ```bash
 python src/pull_free_newswires.py --full --start 2012-07-01 --end 2020-01-01
