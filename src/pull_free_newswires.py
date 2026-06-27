@@ -666,6 +666,7 @@ class NewswireCaScraper:
     SOURCE_KEY = "newswireca"
     SITEMAP_INDEX_URL = "https://www.newswire.ca/sitemap-gz.xml"
     EARLIEST_MONTH = (2011, 1)  # Earliest month with a validated live sitemap
+    _LASTMOD_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
     _MONTH_ABBR = {
         1: "Jan",
@@ -791,7 +792,9 @@ class NewswireCaScraper:
             if lastmod is None:
                 lastmod = url_elem.find("lastmod")
             if lastmod is not None and lastmod.text:
-                pub_date = lastmod.text[:10]
+                match = self._LASTMOD_DATE_RE.match(lastmod.text.strip())
+                if match:
+                    pub_date = match.group(0)
             if pub_date:
                 entries.append(
                     {"headline": headline, "source_url": url, "date": pub_date}
@@ -896,16 +899,34 @@ def _month_complete_marker(base_dir, source_key, year, month):
     )
 
 
-def _mark_month_complete(base_dir, source_key, year, month):
-    """Write a marker file after a month is fully crawled."""
+def _mark_month_complete(base_dir, source_key, year, month, reason="crawled"):
+    """Write a marker file after a month has been fully handled."""
     marker = _month_complete_marker(base_dir, source_key, year, month)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(f"crawled {year:04d}-{month:02d}\n")
+    marker.write_text(f"{reason} {year:04d}-{month:02d}\n")
 
 
 def _is_month_complete(base_dir, source_key, year, month):
-    """Check whether a month has already been fully crawled."""
-    return _month_complete_marker(base_dir, source_key, year, month).exists()
+    """Check whether a month has already been fully crawled.
+
+    Legacy `.complete` markers with zero day-parquets are treated as incomplete
+    so old false-positive markers can be retried. New zero-day markers are
+    trusted only when they record an explicit terminal reason such as
+    `no_sitemap` or `no_urls`.
+    """
+    marker = _month_complete_marker(base_dir, source_key, year, month)
+    if not marker.exists():
+        return False
+
+    done_days = _completed_days(base_dir, source_key, year, month)
+    if done_days:
+        return True
+
+    try:
+        first_token = marker.read_text().strip().split()[0]
+    except (OSError, IndexError):
+        return False
+    return first_token in {"no_sitemap", "no_urls"}
 
 
 # ---------------------------------------------------------------------------
@@ -1040,7 +1061,9 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     xml_bytes = scraper._fetch_sitemap_xml(year, month)
     if xml_bytes is None:
         logger.warning(f"{scraper.NAME}: no sitemap available for {month_str}")
-        _mark_month_complete(output_dir, source_key, year, month)
+        _mark_month_complete(
+            output_dir, source_key, year, month, reason="no_sitemap"
+        )
         return (0, 0)
 
     # --- Fast path: headlines from sitemap metadata (no page fetches) ---
@@ -1088,7 +1111,7 @@ def _crawl_scraper_for_month(scraper, year, month, output_dir, shutdown):
     urls = _parse_sitemap_urls(xml_bytes, url_filter=url_filter)
     logger.info(f"{scraper.NAME}: {len(urls)} URLs for {month_str}")
     if not urls:
-        _mark_month_complete(output_dir, source_key, year, month)
+        _mark_month_complete(output_dir, source_key, year, month, reason="no_urls")
         return (0, 0)
 
     # For scrapers with date-in-URL: pre-filter to skip URLs for completed days
@@ -1302,6 +1325,50 @@ def load_newswire_headlines(data_dir=DATA_DIR):
 # ---------------------------------------------------------------------------
 
 
+def _marker_summary(source_dir, source_name):
+    """Return a dict summarising .complete marker health for one source.
+
+    Categories:
+    - ``with_days``: markers backed by at least one day-parquet (healthy).
+    - ``terminal``: zero-day markers with an explicit terminal reason
+      (``no_sitemap`` or ``no_urls``) — trusted as intentionally empty.
+    - ``legacy``: zero-day markers without a terminal reason — these are
+      false-positive leftovers that ``_is_month_complete`` now ignores,
+      meaning the month will be re-crawled on the next run.
+    """
+    with_days = []
+    terminal = []
+    legacy = []
+
+    for marker in sorted(source_dir.rglob(".complete")):
+        # Derive year/month from the marker's parent path
+        month_dir = marker.parent
+        parts = month_dir.relative_to(source_dir).parts  # year=YYYY / month=MM
+        ym_label = "/".join(parts[:2])
+
+        # Check for day-parquets in the same month directory
+        has_days = any(
+            d.is_dir() and d.name.startswith("day=") and (d / "data.parquet").exists()
+            for d in month_dir.iterdir()
+        )
+        if has_days:
+            with_days.append(ym_label)
+            continue
+
+        # Zero-day marker — check the first token for a terminal reason
+        try:
+            first_token = marker.read_text().strip().split()[0]
+        except (OSError, IndexError):
+            first_token = ""
+
+        if first_token in {"no_sitemap", "no_urls"}:
+            terminal.append(ym_label)
+        else:
+            legacy.append(ym_label)
+
+    return {"with_days": with_days, "terminal": terminal, "legacy": legacy}
+
+
 def _print_status(output_dir=None):
     """Print crawl progress by counting completed day-parquets on disk."""
     if output_dir is None:
@@ -1329,6 +1396,27 @@ def _print_status(output_dir=None):
             months.add(ym)
 
         print(f"  {source_name}: {day_count} days across {len(months)} months")
+
+        # Marker health breakdown
+        summary = _marker_summary(source_dir, source_name)
+        n_markers = (
+            len(summary["with_days"])
+            + len(summary["terminal"])
+            + len(summary["legacy"])
+        )
+        if n_markers:
+            print(
+                f"    markers: {n_markers} total — "
+                f"{len(summary['with_days'])} ok, "
+                f"{len(summary['terminal'])} terminal (no data expected), "
+                f"{len(summary['legacy'])} legacy (will retry)"
+            )
+            if summary["legacy"]:
+                labels = ", ".join(
+                    m.replace("year=", "").replace("/month=", "-")
+                    for m in summary["legacy"]
+                )
+                print(f"    legacy markers to retry: {labels}")
 
     # Also check log file
     log_path = DATA_DIR / "newswire_crawl.log"
