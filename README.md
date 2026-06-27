@@ -112,9 +112,13 @@ python ./src/pull_free_newswires.py --full
 |--------|--------|----------|
 | PR Newswire | Gzipped monthly sitemaps + Wayback fallback | 2010–present |
 | GlobeNewswire | Plain monthly sitemaps (sitemaps.globenewswire.com) | Apr 2023–present |
+| Newswire.ca | Gzipped monthly sitemaps + slug-based headline extraction | 2011–present |
 
 GlobeNewswire headlines are extracted directly from sitemap XML metadata
-(fast-path — no per-page HTTP), yielding ~10K articles/month.
+(fast-path — no per-page HTTP), yielding ~10K articles/month. Newswire.ca
+uses the same monthly gz sitemap structure as PR Newswire, but because its
+sitemaps do not include `news:title`, headlines are derived from the article
+URL slugs (also fast-path, so no per-page HTTP in the common case).
 
 This is a long-running crawl (days/weeks depending on network speed). It is
 **resumable** — completed days are saved as daily Hive-partitioned parquets and
