@@ -8,10 +8,16 @@ How to set up, manage, browse, and load data from ChartBook catalogs.
 
 ```
 ~/.chartbook/
-├── settings.toml        # User settings (catalog path override)
+├── settings.toml        # User settings: [catalog] path, [store] url, [git] path, [cache] path, [resolve] default_host
 ├── chartbook.toml       # Default global catalog
+├── sources.toml         # This machine's urls and credentials for a pipeline's [sources]
+├── trust.toml           # Pipelines and repositories this user trusts a build of (chartbook trust); CI trusts the checkout, CHARTBOOK_TRUST=all every folder
+├── machine-id           # What names this machine in a store's notes of lockfiles (or CHARTBOOK_MACHINE_ID)
+├── store/               # The store: snapshots and pinned copies, by content hash ([store] url or CHARTBOOK_STORE moves it)
+├── cache/               # What was read from a remote store, and each version's built site ([cache] path, CHARTBOOK_CACHE)
+├── git/                 # Clones of git dependencies ([git] path, CHARTBOOK_GIT_CACHE)
 ├── artifacts/           # Auxiliary files (e.g. cached data)
-├── docs/                # Rendered catalog HTML (from `catalog build`)
+├── docs/                # Rendered catalog HTML (from `catalog generate`)
 ├── _docs/               # Temp Sphinx build dir (auto-cleaned)
 └── _docs_src/           # Temp source dir (auto-cleaned)
 ```
@@ -26,15 +32,10 @@ chartbook catalog init --title "My Catalog"  # Non-interactive
 Creates `~/.chartbook/chartbook.toml` with a minimal skeleton:
 
 ```toml
-[config]
+[project]
 type = "catalog"
-
-[site]
-title = "My Catalog"
-author = ""
-copyright = "2026"
-logo_path = ""
-favicon_path = ""
+name = "My Catalog"
+maintainer = ""
 
 [pipelines]
 ```
@@ -75,34 +76,91 @@ chartbook catalog add ./my-pipeline --catalog /path/to/catalog/chartbook.toml
 ```
 
 **Behavior:**
-- Validates each directory contains a `chartbook.toml` with `type = "pipeline"`
-- Extracts pipeline name from `pipeline.pipeline_name` field
-- Generates sanitized TOML keys from directory names (lowercase, underscores)
-- Stores relative paths from the catalog directory
+- Validates each directory contains a `chartbook.toml` that resolves to a pipeline (an empty file counts — type is inferred)
+- Keys the entry by the pipeline's ID: an explicit `[project] id` if set; else, at the top of a git repository with a remote, the repository's scope and name from the remote (whatever the folder is called); in a subfolder, the remote's scope and the subfolder's name; with no remote, the bare folder name
+- Writes the key quoted in TOML when it contains `/`: `[pipelines."ftsfr/crsp_treasury"]`
+- Stores relative paths from the catalog directory in the entry's `path` key, worked out between the two folders with any link in their paths followed
 - Detects duplicates by absolute path comparison
 - Re-adding a disabled pipeline automatically re-enables it
+
+Resulting entries look like:
+
+```toml
+[pipelines."ftsfr/crsp_treasury"]
+path = "../crsp_treasury"
+
+[pipelines."ftsfr/fed_yield_curve"]
+path = "../fed_yield_curve"
+disabled = true
+
+# Platform-specific paths
+[pipelines."finm/news_headlines"]
+path = { unix = "/data/pipelines/news_headlines", windows = "T:/pipelines/news_headlines" }
+```
+
+### Auto-Discovery with `members` (local catalogs)
+
+Instead of explicit entries, a catalog's `[pipelines]` table can declare membership as path patterns — new pipelines dropped into a matched directory join automatically:
+
+```toml
+[pipelines]
+members = [
+    "../GitRepositories/ftsfr_repos/*",
+    "../GitRepositories/finm33200/news_headlines",
+]
+disabled = ["ftsfr/sovereign_bonds"]    # switch member pipelines off by ID
+exclude = ["../GitRepositories/ftsfr_repos/scratch_*"]   # optional
+```
+
+Rules:
+- Patterns resolve relative to the catalog directory; matched directories with a pipeline `chartbook.toml` join under their **derived** scoped ID.
+- Glob matches skip non-pipeline directories and catalogs silently (the catalog never discovers itself); a *literal* member path that is missing/broken is a hard error.
+- v1-format members and duplicate derived IDs are hard errors with "To fix" suggestions.
+- Explicit entries coexist with `members`; one pointing at the same directory a pattern matched wins (rename mechanism).
+- `members`, `exclude`, `disabled` are reserved keys — not usable as bare pipeline IDs.
+- `catalog add` on a covered path reports "already covered by pipelines.members pattern" instead of adding an entry.
+
+Auto-discovery targets the **local** catalog; publishing to shared catalogs should stay explicit.
 
 ### Disable / Enable Pipelines
 
 ```bash
-chartbook catalog disable PIPELINE_ID [--catalog PATH]
-chartbook catalog enable PIPELINE_ID [--catalog PATH]
+chartbook catalog disable ftsfr/crsp_treasury [--catalog PATH]
+chartbook catalog enable ftsfr/crsp_treasury [--catalog PATH]
 ```
 
-Sets or clears `disabled = true` on a pipeline entry. Disabled pipelines remain in the TOML file but are skipped during builds and excluded from queries.
+For explicit entries, sets or clears `disabled = true` on the entry; for member-discovered pipelines, maintains the `pipelines.disabled` ID list. Disabled pipelines remain in the TOML file but are skipped during builds and excluded from queries.
+
+### Catalog Policy (Required Fields)
+
+The `chartbook.toml` format itself makes nearly all fields optional; a catalog can impose requiredness on its member pipelines via a `[policy]` section in the catalog's `chartbook.toml`:
+
+```toml
+[policy]
+mode = "warn"          # "warn" (default): report on the diagnostics page
+                       # "strict": fail the build on missing fields
+
+[policy.required]
+project    = ["description", "maintainer", "repo_url"]
+dataframes = ["date_col", "pull_method"]
+charts     = ["units", "frequency"]
+```
+
+Without a `[policy]` section, a default warn-only list of recommended fields is reported on the diagnostics page. A pipeline may have a `[policy]` of its own, which applies when it is checked or built by itself; inside a catalog, the catalog's policy applies and the pipeline's is ignored. With `mode = "strict"`, the build (a catalog's or a lone pipeline's) fails on a missing required field. `chartbook check` fails on one whatever the mode, and with no policy anywhere it only warns.
 
 ### Build Catalog Documentation
 
 ```bash
-chartbook catalog build              # Build HTML docs to ~/.chartbook/docs/
-chartbook catalog build -f           # Force overwrite existing docs
-chartbook catalog build --strict     # Error on missing files instead of skipping
+chartbook catalog generate           # Render the site to ~/.chartbook/docs/ (incremental: only changed pipelines)
+chartbook catalog generate --clean   # Discard what earlier builds kept and rebuild everything
+chartbook catalog generate -f        # Force overwrite existing docs
+chartbook catalog generate --strict  # Error on missing files instead of skipping
 ```
 
 ### Browse Catalog Documentation
 
 ```bash
-chartbook catalog browse   # Opens ~/.chartbook/docs/index.html in default browser
+chartbook catalog open   # Opens ~/.chartbook/docs/index.html in default browser
 ```
 
 ## Browsing the Catalog (CLI)
@@ -121,22 +179,22 @@ chartbook ls --catalog /path/to/catalog/chartbook.toml
 ```
 Catalog: /path/to/catalog/chartbook.toml
 
-[pipeline] SALES: Sales Analytics Pipeline
-  [dataframe] SALES/sales_data: Sales Transactions
-  [chart] SALES/monthly_sales: Monthly Sales Overview
+[pipeline] acme/sales: Sales Analytics Pipeline
+  [dataframe] acme/sales:sales_data: Sales Transactions
+  [chart] acme/sales:chart/monthly_sales: Monthly Sales Overview
 ```
 
 ### Access Dataframe Metadata
 
 ```bash
-# Get path to a dataframe's parquet file
-chartbook data get-path --pipeline SALES --dataframe sales_data
+# Get path to a dataframe's parquet file (bare pipeline name)
+chartbook data get-path --pipeline sales --dataframe sales_data
 
-# Print documentation content for a dataframe
-chartbook data get-docs --pipeline SALES --dataframe sales_data
+# Print documentation content for a dataframe (scoped pipeline name)
+chartbook data get-docs --pipeline acme/sales --dataframe sales_data
 
 # Get path to documentation source file
-chartbook data get-docs-path --pipeline SALES --dataframe sales_data
+chartbook data get-docs-path --pipeline sales --dataframe sales_data
 ```
 
 All `chartbook data` commands accept an optional `--catalog PATH` flag.
@@ -146,40 +204,59 @@ All `chartbook data` commands accept an optional `--catalog PATH` flag.
 ```python
 from chartbook import data
 
-# Load a dataframe (returns Polars LazyFrame by default)
-lf = data.load(pipeline="SALES", dataframe="sales_data")
+# Load a dataframe (returns Polars LazyFrame by default) — bare pipeline name
+lf = data.load(pipeline="sales", dataframe="sales_data")
+
+# Scoped pipeline name (canonical form; required when a bare name is ambiguous)
+lf = data.load(pipeline="acme/sales", dataframe="sales_data")
 
 # Load as Polars eager DataFrame
-df = data.load(pipeline="SALES", dataframe="sales_data", format="polars_eager")
+df = data.load(pipeline="sales", dataframe="sales_data", format="polars_eager")
 
 # Load as pandas DataFrame
-df = data.load(pipeline="SALES", dataframe="sales_data", format="pandas")
+df = data.load(pipeline="sales", dataframe="sales_data", format="pandas")
 
 # Load with explicit catalog path
-lf = data.load(pipeline="SALES", dataframe="sales_data",
+lf = data.load(pipeline="sales", dataframe="sales_data",
                catalog_path="/path/to/catalog/chartbook.toml")
 
 # Get data file path
-path = data.get_data_path(pipeline="SALES", dataframe="sales_data")
+path = data.get_data_path(pipeline="sales", dataframe="sales_data")
+
+# Each of these reads the pipeline's newest snapshot in the store first (its pin, in a
+# pipeline that declares it), and its folder only when it has none, with a
+# WorkingVersionWarning saying so.
 
 # Get documentation content as a string
-docs = data.get_docs(pipeline="SALES", dataframe="sales_data")
+docs = data.get_docs(pipeline="sales", dataframe="sales_data")
 
 # Get path to documentation source file
-docs_path = data.get_docs_path(pipeline="SALES", dataframe="sales_data")
+docs_path = data.get_docs_path(pipeline="sales", dataframe="sales_data")
 ```
+
+### Pipeline Reference Resolution
+
+The `pipeline` argument (and `--pipeline` CLI flag) accepts three forms:
+
+1. **Bare name** (`crsp_treasury`) — matches any catalog entry whose name component equals it; errors listing candidates if ambiguous
+2. **Scoped name** (`ftsfr/crsp_treasury`) — matches its catalog key exactly
+3. **Repo URL** (`https://github.com/ftsfr/crsp_treasury`) — normalized to a scoped name
+
+An `@rev` suffix (e.g. `ftsfr/crsp_treasury@a1b2c3d`) is reserved for future version pinning and is rejected with a "not yet supported" error. So is a registry prefix (e.g. `charthub.example/ftsfr/crsp_treasury`): a leading component that looks like a host, in a three-component ID, is reserved for a future registry.
 
 ### Format Options
 
 | Format | Returns | Glob support |
 |--------|---------|--------------|
-| `"polars"` (default) | `polars.LazyFrame` via `scan_parquet(hive_partitioning=True)` | Yes |
-| `"polars_eager"` | `polars.DataFrame` via `read_parquet()` | No (`ValueError`) |
-| `"pandas"` | `pandas.DataFrame` via `read_parquet()` | No (`ValueError`) |
+| `"polars"` (default) | `polars.LazyFrame` via `scan_parquet(hive_partitioning=True)` (or `scan_csv`, `scan_ndjson`, `scan_ipc`) | Yes |
+| `"polars_eager"` | `polars.DataFrame`: the LazyFrame, collected | Yes |
+| `"pandas"` | `pandas.DataFrame` via `read_parquet()`; a glob, or another format, as the LazyFrame collected | Yes |
+
+`format=` is what is returned. The file's own format is its manifest's `format` key, else its path's ending: parquet, CSV/TSV, JSON lines (gzipped or not) or Arrow IPC.
 
 ### Hive-Partitioned Data Loading
 
-When `path_to_parquet_data` uses a glob pattern (e.g., `**/*.parquet`), Polars `scan_parquet` automatically detects hive directory structure and adds partition columns to the LazyFrame. Only `format="polars"` supports glob patterns.
+When a dataframe's `path` uses a glob pattern (e.g., `**/*.parquet`), Polars `scan_parquet` automatically detects hive directory structure and adds partition columns to the LazyFrame (for parquet and Arrow IPC; not for CSV or JSON lines). Every `format=` reads a glob.
 
 ### Catalog Path Resolution in Python
 
@@ -192,8 +269,8 @@ Same priority as CLI:
 ### Documentation Retrieval
 
 `get_docs()` and `get_docs_path()` handle both documentation modes transparently:
-- **`dataframe_docs_path`**: Reads the external `.md` file; `get_docs_path()` returns the file path
-- **`dataframe_docs_str`**: Returns the inline string directly; `get_docs_path()` returns the `chartbook.toml` path
+- **`docs_path`**: Reads the external `.md` file; `get_docs_path()` returns the file path
+- **`docs`** (inline string): Returns the string directly; `get_docs_path()` returns the `chartbook.toml` path
 
 ## Environment & Path Utilities (`chartbook.env`)
 
@@ -224,20 +301,20 @@ os_type = chartbook.env.get_os_type()
 ## Scaffolding New Projects
 
 ```bash
-chartbook init   # Wraps cruft create — requires pip install "chartbook[all]"
+chartbook init   # Renders the template that came with this ChartBook (no network)
 ```
 
-Creates a new pipeline project from the cookiecutter template. Projects can later pull upstream template updates via `cruft update`.
+Creates a new pipeline project from the cookiecutter template that came with the installed ChartBook; its environment files ask for that ChartBook's version or later. Its `.cruft.json` names the template on GitHub and the commit the ChartBook was built from, so the project can later pull upstream template updates via `cruft update`.
 
 ## CLI Build & Publish Reference
 
 ```bash
-chartbook build [OUTPUT_DIR]     # Generate HTML documentation
-chartbook build -f               # Force overwrite existing output
-chartbook build --strict         # Error on missing files
-chartbook build --keep-build-dirs  # Keep temp build directories
-chartbook publish                # Publish to directory
-chartbook create-data-glimpses   # Create data summary report
+chartbook docs generate [OUTPUT_DIR]       # Render the documentation site
+chartbook docs generate -f                 # Force overwrite existing output
+chartbook docs generate --strict           # Error on missing files
+chartbook docs generate --keep-build-dirs  # Keep temp build directories
+chartbook publish                          # Publish to directory
+chartbook create-data-glimpses             # Create data summary report
 ```
 
 ### Build Options

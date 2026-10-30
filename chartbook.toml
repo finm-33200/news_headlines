@@ -11,7 +11,10 @@ os_compatibility = [
     "Linux",
     "MacOS",
 ]
-build = "module load anaconda3/3.11.4 TeXLive/2023"
+requires_chartbook = ">=0.3.0"
+
+[scripts]
+build = "doit"
 
 [notebooks.01_data_sources_overview]
 description = "Pipeline motivation, data source comparison, and summary statistics for each dataset."
