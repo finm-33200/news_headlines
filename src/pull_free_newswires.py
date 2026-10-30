@@ -356,6 +356,17 @@ _WAYBACK_TIMESTAMPS = {
     "2022-08": "20240501203810",
     "2023-01": "20240101074937",
     "2023-10": "20240101014022",
+    # Added 2026-10-11. PR Newswire regenerates the monthly archives and many
+    # live copies are currently truncated or hold only part of the month.
+    # These captures were validated as complete (14.6K-20.4K releases each).
+    # Caveat: the fallback only triggers when the live copy fails to
+    # decompress. Live 2025-10 and 2025-12 decompress but are incomplete
+    # (12.4K of 20.4K and 70 of 14.6K releases), so those two still need a
+    # manual backfill from the capture. No capture exists for 2026-04..08.
+    "2025-10": "20260501053507",
+    "2025-11": "20260501052256",
+    "2025-12": "20260401003118",
+    "2026-03": "20260501045023",
 }
 
 
@@ -504,10 +515,17 @@ class GlobeNewswireScraper:
         https://sitemaps.globenewswire.com/news/en/YYYY-MM.xml  (monthly)
         https://sitemaps.globenewswire.com/news/en/latest.xml   (rolling recent)
 
-    Monthly sitemaps are plain XML (not gzipped) and include Google News
-    metadata: title, publication date, keywords, and stock tickers.
-    This means headlines can be extracted directly from the sitemap XML
-    without fetching individual article pages (fast-path).
+    Monthly sitemaps are plain XML (not gzipped). They used to include
+    Google News metadata (title, publication date, keywords, tickers), so
+    headlines could be read straight from the sitemap XML. As of late 2026
+    the monthly sitemaps are plain ``<loc>`` lists with no ``news:title``,
+    and article pages return HTTP 403 to scripted clients. When titles are
+    absent, headlines are rebuilt from the URL slug and the date is read
+    from the URL path (same approach as Newswire.ca), so no article pages
+    are fetched:
+
+        .../news-release/YYYY/MM/DD/{id}/{org}/en/{slug}.html
+        "kohl-s-reports-q4-results" -> "Kohl S Reports Q4 Results"
 
     Coverage: Apr 2023 to present (~10K articles/month).
     """
@@ -568,6 +586,57 @@ class GlobeNewswireScraper:
         """Return whether a sitemap URL is a press release page."""
         return "/news-release/" in url.lower()
 
+    # .../news-release/YYYY/MM/DD/{id}/{org}/{lang}/{slug}.html
+    _SLUG_URL_RE = re.compile(
+        r"/news-release/(\d{4})/(\d{2})/(\d{2})/\d+/\d+/[A-Za-z-]{2,7}/([^/?#]+)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _headline_from_slug(cls, url):
+        """Extract an approximate headline from a GlobeNewswire URL slug.
+
+        Returns a title-cased string, or None if the URL doesn't match the
+        expected press-release pattern.
+        """
+        match = cls._SLUG_URL_RE.search(url)
+        if not match:
+            return None
+        slug = match.group(4)
+        if slug.lower().endswith(".html"):
+            slug = slug[:-5]
+        slug = unquote(slug)
+        headline = slug.replace("-", " ").strip()
+        if not headline:
+            return None
+        return headline.title()
+
+    def parse_entries_from_xml(self, xml_bytes):
+        """Extract {headline, source_url, date} entries from a monthly sitemap.
+
+        Prefers real titles from Google News metadata when the sitemap has
+        them. Otherwise falls back to slug-derived headlines with the date
+        taken from the URL path, so no article pages need to be fetched.
+        """
+        entries = _parse_sitemap_news_entries(xml_bytes)
+        if entries:
+            return entries
+
+        urls = _parse_sitemap_urls(xml_bytes, url_filter=self.press_release_url_filter)
+        for url in urls:
+            headline = self._headline_from_slug(url)
+            pub_date = self.date_from_url(url)
+            if headline and pub_date:
+                entries.append(
+                    {"headline": headline, "source_url": url, "date": pub_date}
+                )
+        if entries:
+            logger.info(
+                f"{self.NAME}: no <news:title> in sitemap; "
+                f"{len(entries)} headlines rebuilt from URL slugs"
+            )
+        return entries
+
     def _fetch_sitemap_xml(self, year, month):
         """Fetch the monthly sitemap XML (plain, not gzipped).
 
@@ -585,7 +654,7 @@ class GlobeNewswireScraper:
     def _parse_headline_from_soup(self, soup, url):
         """Parse headline from a GlobeNewswire article page (fallback path).
 
-        Rarely needed since GlobeNewswire sitemaps always include news:title.
+        Rarely needed: parse_entries_from_xml() covers both sitemap formats.
         """
         headline = None
         for selector in ["h1.article-headline", "h1.main-title", "h1"]:
@@ -621,14 +690,15 @@ class GlobeNewswireScraper:
     def sitemap_entries_for_month(self, year, month):
         """Extract headlines directly from monthly sitemap metadata.
 
-        GlobeNewswire sitemaps always include news:title, so the fast-path
-        should always succeed. Returns None only if the sitemap is unavailable.
+        Uses news:title when present and URL slugs otherwise, so the
+        fast-path should always succeed. Returns None only if the sitemap is
+        unavailable or yields no entries.
         """
         month_str = f"{year:04d}-{month:02d}"
         xml_bytes = self._fetch_sitemap_xml(year, month)
         if xml_bytes is None:
             return None
-        entries = _parse_sitemap_news_entries(xml_bytes)
+        entries = self.parse_entries_from_xml(xml_bytes)
         if entries:
             logger.info(
                 f"{self.NAME}: {len(entries)} entries with sitemap metadata for {month_str}"

@@ -174,9 +174,10 @@ def build_merged_dataset(data_dir=DATA_DIR, output_path=DEFAULT_OUTPUT):
         if writer is not None:
             writer.close()
 
-    # Atomic rename
+    # Atomic rename. Path.replace overwrites an existing output on every OS;
+    # Path.rename raises FileExistsError on Windows when rebuilding.
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path.rename(output_path)
+    tmp_path.replace(output_path)
 
     logger.info(f"  Merged dataset: {total_rows:,} rows")
     logger.info(

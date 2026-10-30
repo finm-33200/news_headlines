@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pull_free_newswires as module
-from pull_free_newswires import NewswireCaScraper
+from pull_free_newswires import GlobeNewswireScraper, NewswireCaScraper
 
 
 def test_newswireca_headline_from_slug_decodes_encoded_characters():
@@ -175,3 +175,67 @@ def test_marker_summary_no_urls_is_terminal(tmp_path):
     assert len(summary["terminal"]) == 1
     assert summary["with_days"] == []
     assert summary["legacy"] == []
+
+
+def test_globenewswire_headline_from_slug_handles_org_id_and_encoding():
+    url = (
+        "https://www.globenewswire.com/news-release/2026/02/26/3246152/18120/en/"
+        "dillard-s-inc-announces-0-30-cash-dividend-%26-buyback.html"
+    )
+
+    headline = GlobeNewswireScraper._headline_from_slug(url)
+
+    assert headline == "Dillard S Inc Announces 0 30 Cash Dividend & Buyback"
+    assert GlobeNewswireScraper._headline_from_slug(
+        "https://www.globenewswire.com/search/keyword/earnings"
+    ) is None
+
+
+def test_globenewswire_parse_entries_from_xml_falls_back_to_slug_and_url_date():
+    xml_bytes = b"""
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://www.globenewswire.com/news-release/2026/02/26/3246149/0/en/cubesmart-reports-fourth-quarter-and-annual-2025-results.html</loc></url>
+      <url><loc>https://www.globenewswire.com/news-release/2026/02/27/3246500/0/en/hub-group-declares-quarterly-dividend.html</loc></url>
+      <url><loc>https://www.globenewswire.com/about</loc></url>
+    </urlset>
+    """
+
+    entries = GlobeNewswireScraper().parse_entries_from_xml(xml_bytes)
+
+    assert entries == [
+        {
+            "headline": "Cubesmart Reports Fourth Quarter And Annual 2025 Results",
+            "source_url": "https://www.globenewswire.com/news-release/2026/02/26/3246149/0/en/cubesmart-reports-fourth-quarter-and-annual-2025-results.html",
+            "date": "2026-02-26",
+        },
+        {
+            "headline": "Hub Group Declares Quarterly Dividend",
+            "source_url": "https://www.globenewswire.com/news-release/2026/02/27/3246500/0/en/hub-group-declares-quarterly-dividend.html",
+            "date": "2026-02-27",
+        },
+    ]
+
+
+def test_globenewswire_parse_entries_from_xml_prefers_news_title_when_present():
+    xml_bytes = b"""
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+            xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+      <url>
+        <loc>https://www.globenewswire.com/news-release/2025/06/30/3107952/0/en/achieve-life-sciences-announces-closing.html</loc>
+        <news:news>
+          <news:publication_date>2025-06-30T20:05:00Z</news:publication_date>
+          <news:title>Achieve Life Sciences Announces Closing of Public Offering</news:title>
+        </news:news>
+      </url>
+    </urlset>
+    """
+
+    entries = GlobeNewswireScraper().parse_entries_from_xml(xml_bytes)
+
+    assert entries == [
+        {
+            "headline": "Achieve Life Sciences Announces Closing of Public Offering",
+            "source_url": "https://www.globenewswire.com/news-release/2025/06/30/3107952/0/en/achieve-life-sciences-announces-closing.html",
+            "date": "2025-06-30",
+        },
+    ]

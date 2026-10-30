@@ -148,7 +148,9 @@ def pull_ravenpack(
             writer.close()
         gc.collect()
 
-    tmp_path.rename(output_path)
+    # Path.replace overwrites an existing output on every OS; Path.rename
+    # raises FileExistsError on Windows when re-pulling.
+    tmp_path.replace(output_path)
     print(f"Total RavenPack headlines: {total_rows:,}", flush=True)
     return total_rows
 

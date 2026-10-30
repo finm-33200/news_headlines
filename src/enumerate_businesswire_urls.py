@@ -73,8 +73,16 @@ NON_ARTICLE_SLUG_EXTENSIONS = {
 }
 
 
+class CDXQueryError(RuntimeError):
+    """The CDX query for a date failed, as opposed to returning no rows."""
+
+
 def _query_cdx_for_date(date_str, session):
     """Query Wayback CDX for all Business Wire articles on a given date.
+
+    Returns an empty list only when CDX answered successfully with no rows.
+    Raises CDXQueryError when the query itself failed (HTTP error or retries
+    exhausted), so callers do not record a failed day as an empty one.
 
     Parameters
     ----------
@@ -107,9 +115,19 @@ def _query_cdx_for_date(date_str, session):
                 wait = (2**attempt) * 15
                 logger.warning(f"CDX 429 rate limited, waiting {wait}s")
                 time.sleep(wait)
+            elif resp.status_code >= 500:
+                # Transient archive.org overload (502/503/504). Back off and
+                # retry; never treat it as "no articles for this date".
+                wait = (2**attempt) * 10
+                logger.warning(
+                    f"CDX HTTP {resp.status_code} for date {date_str} "
+                    f"(attempt {attempt + 1}/{MAX_RETRIES}), waiting {wait}s"
+                )
+                time.sleep(wait)
             else:
-                logger.warning(f"CDX HTTP {resp.status_code} for date {date_str}")
-                return []
+                raise CDXQueryError(
+                    f"CDX HTTP {resp.status_code} for date {date_str}"
+                )
         except (json.JSONDecodeError, ValueError) as e:
             # CDX sometimes returns truncated/malformed JSON — retry
             snippet = repr(resp.text[:200]) if resp is not None else "N/A"
@@ -123,8 +141,9 @@ def _query_cdx_for_date(date_str, session):
                 f"CDX network error for {date_str} (attempt {attempt + 1}): {e}"
             )
             time.sleep(2**attempt)
-    logger.error(f"CDX failed after {MAX_RETRIES} retries for {date_str}")
-    return []
+    # A failed query is not an empty day. Raising lets enumerate_urls() skip
+    # writing the empty-inventory marker, so the day is retried on the next run.
+    raise CDXQueryError(f"CDX failed after {MAX_RETRIES} retries for {date_str}")
 
 
 def _headline_from_slug(slug):
