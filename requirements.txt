@@ -21,7 +21,7 @@ jupytext
 notebook
 
 # Documentation/notebook rendering dependencies
-chartbook>=0.3.0
+chartbook>=0.4.0
 
 # WRDS data access
 wrds>=3.2.0
