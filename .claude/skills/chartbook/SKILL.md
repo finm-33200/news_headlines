@@ -2,7 +2,7 @@
 name: chartbook
 description: Help users work with ChartBook - a data science documentation platform for organizing pipelines, charts, and dataframes
 metadata:
-  chartbook-version: "0.4.0"
+  chartbook-version: "0.5.0"
 ---
 
 # ChartBook Assistant
@@ -64,6 +64,7 @@ chartbook run --frozen      # Pin nothing, fetch nothing, write nothing but the 
 chartbook run <script>      # ...or another named script, e.g. `chartbook run test` (pins nothing)
 chartbook run --force       # Also rebuild git dependencies (each is built once, in a clean copy); refreshes data they pull from outside
 chartbook run --remake      # Build even though a `keep = true` asset is missing while the store has a version of it. Without it, `run` and `build` STOP before the build script and say `chartbook restore` or `--remake`. To remake one on purpose: delete the file, then --remake
+chartbook store ls [ID]     # Every snapshot in the store, standalone (its folder holds every file of its version) or shared (only what changed; the rest sit in other snapshots' folders, since the store keeps each file once), with what its folder holds. Remove snapshots with `store gc`, never by hand
 chartbook store info        # Which store this machine uses and what set it (CHARTBOOK_STORE, your settings, the organization's, or the default); check it on each machine that shares a store (a synced folder, a shared disk)
 chartbook store verify      # Re-hash everything in the store (~/.chartbook/store, `[store] url` in settings, or CHARTBOOK_STORE; a folder or s3://bucket/prefix with chartbook[s3]); exit 1 if an object changed
 chartbook store gc          # Remove old snapshots (unpinned, not the newest of their repository, unlabelled, >7 days; --keep-days) and what nothing names; lists and asks first (--dry-run, --yes); --keep-lineage keeps every snapshot upstream of a kept one; --aggressive lets git tags, branches and model labels keep nothing. A git tag names a version (snapshots record their commit's tags). Every version of a `keep = true` asset is kept, --aggressive too, and gc prints the bill per asset
@@ -173,13 +174,16 @@ lf = data.load(pipeline="crsp_treasury", dataframe="my_data", catalog_path="/pat
 # Through a catalog, it is the pipeline's NEWEST SNAPSHOT in the store (its pin, in a pipeline
 # that declares it). With no snapshot, make one or explicitly link the dependency.
 
-# Get data file path (through the catalog)
+# Get data file path (through the catalog). A dataset of one file only: one of several files
+# (a Hive folder or a glob) raises NoSinglePathError; read it with data.load, or list data.files
 path = data.get_data_path(pipeline="crsp_treasury", dataframe="my_data")
 
 # Inside a pipeline: the path its own chartbook.toml declares for a dataframe.
 # No catalog needed; the file need not exist yet, so use it for dodo.py targets
-# and for writing outputs.
+# and for writing outputs. Its folder is made for you. A dataset declared as a
+# folder is written with partition_by.
 df.to_parquet(data.path("my_data"))
+pl_df.write_parquet(data.path("articles"), partition_by="year")  # path = "./_data/articles"
 
 # The same for any other asset: put its kind in front of the name
 # (chart/, notebook/, note/). data.path(x) is assets.path(x, kind="dataframe").
@@ -195,7 +199,9 @@ joblib.dump(model, models.path("my_model"))
 # the start of its content hash, and labelled in chartbook.toml:
 #   [models.my_model.aliases]
 #   champion = "7f3a9c2e41b0"
-# models.path("my_model@champion") is that version in the store (read-only);
+# models.path("my_model@champion") is that version in the store (read-only) when the model is
+# one file; a model that is a folder has files, not a path: assets.files("model/my_model@champion"),
+# or `with assets.gathered("model/my_model@champion") as folder:` for a loader that takes a directory.
 # models.versions("my_model") lists them with their scores and commits.
 
 # Files that are not tables (an archive of .jsonl.gz, a corpus of HTML, PDFs, images,
@@ -222,9 +228,14 @@ table = assets.index("file/filings")          # LazyFrame: path, size_bytes, sha
 # "pipeline:name" is that pipeline's asset AS PINNED: a frozen copy in the store,
 # not its working directory. It changes only on `chartbook update`. Read-only.
 rates = data.load("fed_yield_curve:treasury_rates")           # LazyFrame, pinned copy
-path = data.path("fed_yield_curve:treasury_rates")            # its path in the store
+path = data.path("fed_yield_curve:treasury_rates")            # its path in the store (one file)
+files = data.files("news_headlines:articles")                 # a Hive folder or glob: its files, wherever kept
 chart = assets.path("fed_yield_curve:chart/curve_today")      # any kind of asset
 mine = data.load("my_data")                                   # this pipeline's own, live
+# Another pipeline's dataset of several files has NO one path: the store keeps each file once,
+# so its files may sit in several snapshots' folders. data.path() raises
+# NoSinglePathError; data.load()/data.sql() read the files where they are, data.files() lists
+# them (for a dodo.py file_dep). A model that is a folder: `with assets.gathered(ref) as folder:`.
 # ChartBook NEVER selects columns or rows. "my_data#col" is an address for
 # documenting a column and is refused by data.load()/data.path(). Load or locate
 # the whole dataframe, then use polars or SQL:
@@ -252,8 +263,8 @@ data.connect("local")      # the raw connection to [sources.local]: read-only du
 # `chartbook run` stops before remaking it (`--remake` to go on). For doit, give the costly
 # task `targets` and `uptodate: [True]` and NO file_dep: it then runs only when its file is missing.
 
-# A throwaway directory for intermediates (<pipeline>/_data/_scratch/):
-# not an asset, git-ignored, safe to delete
+# A throwaway directory for intermediates (<pipeline>/_data/_scratch/, or
+# [project] scratch = "./_tmp"): not an asset, git-ignored, safe to delete
 tmp = data.scratch() / "raw_download.csv"
 
 # Get documentation content as a string
@@ -328,7 +339,7 @@ name = "My Pipeline"
 description = "Description"
 maintainer = "Your Name"
 # id = "myorg/my_pipeline"       # Optional: scoped ID (default derived from git remote + dirname)
-requires_chartbook = ">=0.4.0"   # Optional: an older ChartBook stops and says how to upgrade (`chartbook init` writes it)
+requires_chartbook = ">=0.5.0"   # Optional: an older ChartBook stops and says how to upgrade (`chartbook init` writes it)
 # site_dir = "./docs_src/site/"  # Optional: default when the directory exists
 # writer = "mkdocs"              # Optional: build the site with MkDocs instead of Sphinx (pip install chartbook[mkdocs])
 ```
